@@ -39,6 +39,11 @@ class Employee(Base):
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    # Индивидуальный график. Пусто — общий график из настроек.
+    work_start: Mapped[str | None] = mapped_column(String(5), nullable=True)   # "08:30"
+    work_end: Mapped[str | None] = mapped_column(String(5), nullable=True)     # "17:30"
+    work_days: Mapped[str | None] = mapped_column(String(20), nullable=True)   # "1,2,3,4,5,6"
+
     attendances: Mapped[list[Attendance]] = relationship(back_populates="employee")
 
     @property
@@ -76,6 +81,7 @@ class Attendance(Base):
     check_out_mode: Mapped[str | None] = mapped_column(String(10), nullable=True)
     early_leave_minutes: Mapped[int] = mapped_column(Integer, default=0)
     worked_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    corrected: Mapped[bool | None] = mapped_column(default=False, nullable=True)  # время правил руководитель
 
     employee: Mapped[Employee] = relationship(back_populates="attendances")
 
@@ -135,6 +141,49 @@ class TaskAlert(Base):
     acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     task: Mapped[Task] = relationship()
+
+
+class DayKind(StrEnum):
+    DAY_OFF = "day_off"       # выходной
+    SICK = "sick"             # больничный
+    VACATION = "vacation"     # отпуск
+    TRIP = "trip"             # командировка
+    TIME_OFF = "time_off"     # отгул
+    HOLIDAY = "holiday"       # праздник для всех
+
+
+class DayMark(Base):
+    """Особый день: опоздание и неявка в этот день не считаются.
+
+    employee_id пустой — праздник для всех.
+    """
+
+    __tablename__ = "day_marks"
+    __table_args__ = (UniqueConstraint("employee_id", "day", name="uq_day_mark"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"), nullable=True, index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuditLog(Base):
+    """Журнал ручных изменений: кто, когда, что было, что стало, почему."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    work_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    action: Mapped[str] = mapped_column(String(50))
+    old_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    new_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Setting(Base):

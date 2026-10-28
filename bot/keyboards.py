@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from bot import texts
-from bot.callbacks import AcceptCb, AlertCb, AssignCb, CarryCb, PlanCb, ReportCb, TaskCb
+from bot.callbacks import AcceptCb, AlertCb, AssignCb, CarryCb, PlanCb, ReportCb, ReportsCb, TaskCb, TsCb
 from bot.models import Employee, Task
 from bot.task_rules import BlockReason, TaskStatus, due_options
 
@@ -53,6 +53,7 @@ def main_menu(employee: Employee, *, checked_in: bool, checked_out: bool) -> Rep
         rows = [[KeyboardButton(text=texts.BTN_MY_TASKS)]]
 
     if employee.is_manager:
+        rows.append([KeyboardButton(text=texts.BTN_REPORTS), KeyboardButton(text=texts.BTN_TIMESHEET)])
         rows.append([KeyboardButton(text=texts.BTN_EMPLOYEES), KeyboardButton(text=texts.BTN_ASSIGN)])
     rows.append([KeyboardButton(text=texts.BTN_HELP)])
     return _kb(rows)
@@ -184,6 +185,88 @@ def alert_actions(alert_id: int) -> InlineKeyboardMarkup:
             [
                 _btn("👌 Принял", AlertCb(action="ack", alert_id=alert_id)),
                 _btn("❌ Отменить задачу", AlertCb(action="cancel", alert_id=alert_id)),
+            ]
+        ]
+    )
+
+
+# ---------- Отчёты и табель ----------
+
+
+def reports_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("Сегодня", ReportsCb(period="today")), _btn("Вчера", ReportsCb(period="yesterday"))],
+            [_btn("Эта неделя", ReportsCb(period="week")), _btn("Прошлая неделя", ReportsCb(period="prev_week"))],
+            [_btn("Этот месяц", ReportsCb(period="month")), _btn("Прошлый месяц", ReportsCb(period="prev_month"))],
+        ]
+    )
+
+
+def ts_employees(people: list[Employee]) -> InlineKeyboardMarkup:
+    rows = [[_btn(p.full_name[:60], TsCb(action="emp", emp=p.id))] for p in people]
+    rows.append([_btn("🎉 Праздник для всех", TsCb(action="emp", emp=0))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+_WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+def ts_days(emp_id: int, today: date) -> InlineKeyboardMarkup:
+    def label(d: date) -> str:
+        if d == today:
+            return "Сегодня"
+        if d == today - timedelta(days=1):
+            return "Вчера"
+        if d == today + timedelta(days=1):
+            return "Завтра"
+        return f"{_WD[d.weekday()]} {d:%d.%m}"
+
+    days = [today + timedelta(days=1)] + [today - timedelta(days=i) for i in range(0, 7)]
+    buttons = [_btn(label(d), TsCb(action="day", emp=emp_id, day=f"{d:%Y%m%d}")) for d in days]
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([_btn("📅 Другая дата", TsCb(action="other", emp=emp_id))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ts_actions(emp_id: int, day: date) -> InlineKeyboardMarkup:
+    d = f"{day:%Y%m%d}"
+    if emp_id == 0:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [_btn("🎉 Праздник", TsCb(action="kind", emp=0, day=d, value="holiday"))],
+                [_btn("🧹 Снять праздник", TsCb(action="unmark", emp=0, day=d))],
+            ]
+        )
+    k = lambda text, kind: _btn(text, TsCb(action="kind", emp=emp_id, day=d, value=kind))  # noqa: E731
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [k("🏖 Выходной", "day_off"), k("🤒 Больничный", "sick")],
+            [k("✈️ Отпуск", "vacation"), k("🚗 Командировка", "trip")],
+            [k("🕐 Отгул", "time_off"), _btn("🧹 Снять отметку", TsCb(action="unmark", emp=emp_id, day=d))],
+            [
+                _btn("✏️ Время прихода", TsCb(action="in", emp=emp_id, day=d)),
+                _btn("✏️ Время ухода", TsCb(action="out", emp=emp_id, day=d)),
+            ],
+            [_btn("⏰ Изменить график", TsCb(action="sched", emp=emp_id, day=d))],
+            [_btn("◀️ Другой день", TsCb(action="emp", emp=emp_id))],
+        ]
+    )
+
+
+def ts_days_count(emp_id: int, day: date, kind: str) -> InlineKeyboardMarkup:
+    d = f"{day:%Y%m%d}"
+    buttons = [_btn(str(n), TsCb(action="days", emp=emp_id, day=d, value=f"{kind}|{n}")) for n in (1, 2, 3, 5, 7, 14)]
+    return InlineKeyboardMarkup(inline_keyboard=[buttons[:3], buttons[3:]])
+
+
+def ts_schedule_days(emp_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn("Пн–Пт", TsCb(action="sdays", emp=emp_id, value="1,2,3,4,5")),
+                _btn("Пн–Сб", TsCb(action="sdays", emp=emp_id, value="1,2,3,4,5,6")),
+                _btn("Каждый день", TsCb(action="sdays", emp=emp_id, value="1,2,3,4,5,6,7")),
             ]
         ]
     )

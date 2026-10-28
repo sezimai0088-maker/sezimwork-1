@@ -36,3 +36,14 @@ class AcceptCb(CallbackData, prefix="ac"):
 class AlertCb(CallbackData, prefix="al"):
     action: str          # ack | cancel
     alert_id: int
+
+
+class ReportsCb(CallbackData, prefix="rep"):
+    period: str          # today | yesterday | week | prev_week | month | prev_month
+
+
+class TsCb(CallbackData, prefix="ts"):
+    action: str          # emp | day | other | kind | days | in | out | unmark | sched | sdays | back
+    emp: int = 0         # 0 — все сотрудники (праздник)
+    day: str = ""        # ГГГГММДД
+    value: str = ""

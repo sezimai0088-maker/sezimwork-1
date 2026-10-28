@@ -3,3 +3,4 @@ SQLAlchemy[asyncio]>=2.0,<3
 aiosqlite>=0.20
 pydantic-settings>=2.4,<3
 tzdata>=2024.1
+XlsxWriter>=3.1

@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     # Через сколько дней подряд «Не успел» руководитель получает алерт
     alert_days: int = 2
 
+    # Отчёты и напоминания
+    daily_report_time: time = time(19, 0)       # ежедневный отчёт руководителю и владельцу
+    weekly_report_time: time = time(9, 0)       # недельный (понедельник) и месячный (1-е число)
+    checkin_reminder_min: int = 15              # через сколько минут после начала напомнить отметиться
+    morning_summary_min: int = 30               # через сколько минут после начала — «ещё не отметились» в чат
+    checkout_reminder_min: int = 30             # через сколько минут после конца напомнить завершить день
+    backup_time: time = time(3, 0)              # ночной бэкап базы владельцу
+
     twogis_base_url: str = "https://2gis.kg"
     database_url: str = "sqlite+aiosqlite:///data/bot.db"
 

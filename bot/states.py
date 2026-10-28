@@ -22,3 +22,10 @@ class Report(StatesGroup):
 
 class Assign(StatesGroup):
     text = State()       # руководитель пишет текст задачи
+
+
+class Timesheet(StatesGroup):
+    date_text = State()      # руководитель вводит дату
+    time = State()           # вводит время прихода/ухода
+    reason = State()         # причина исправления
+    schedule = State()       # время работы для графика

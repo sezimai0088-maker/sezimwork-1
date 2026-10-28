@@ -15,6 +15,7 @@ from bot.config import Settings
 from bot.db import init_db, make_engine, make_sessionmaker
 from bot.handlers import build_router
 from bot.middlewares import DbSessionMiddleware
+from bot.scheduler import run_scheduler
 
 
 async def main() -> None:
@@ -34,11 +35,15 @@ async def main() -> None:
         [BotCommand(command="start", description="Открыть меню")], scope=BotCommandScopeAllPrivateChats()
     )
 
+    # Расписание: напоминания, отчёты, повтор алертов, бэкап
+    scheduler = asyncio.create_task(run_scheduler(bot, sessionmaker, settings))
+
     logging.getLogger(__name__).info("Бот запущен")
     try:
         # Long polling: бот сам забирает сообщения у Telegram, домен и HTTPS не нужны.
         await dp.start_polling(bot, settings=settings, allowed_updates=dp.resolve_used_update_types())
     finally:
+        scheduler.cancel()
         await bot.session.close()
         await engine.dispose()
 

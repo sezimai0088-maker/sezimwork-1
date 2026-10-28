@@ -22,6 +22,7 @@ from aiogram.methods import (  # noqa: E402
     AnswerCallbackQuery,
     EditMessageReplyMarkup,
     EditMessageText,
+    SendDocument,
     SendMessage,
     TelegramMethod,
 )
@@ -47,7 +48,7 @@ class FakeTelegram(BaseSession):
 
     async def make_request(self, bot, method, timeout=None):  # noqa: ANN001
         self.calls.append(method)
-        if isinstance(method, (SendMessage, EditMessageText, EditMessageReplyMarkup)):
+        if isinstance(method, (SendMessage, SendDocument, EditMessageText, EditMessageReplyMarkup)):
             chat_id = getattr(method, "chat_id", None) or 0
             return Message(
                 message_id=next(self._ids),
@@ -62,6 +63,9 @@ class FakeTelegram(BaseSession):
 
     async def close(self) -> None:
         pass
+
+    def documents(self, chat_id: int) -> list[SendDocument]:
+        return [c for c in self.calls if isinstance(c, SendDocument) and c.chat_id == chat_id]
 
     def sent(self, chat_id: int | None = None) -> list[SendMessage]:
         return [c for c in self.calls if isinstance(c, SendMessage) and (chat_id is None or c.chat_id == chat_id)]
@@ -107,9 +111,9 @@ class Harness:
         self.dp["settings"] = self.settings
         self.dp.update.outer_middleware(DbSessionMiddleware(make_sessionmaker(self.engine)))
         # Роутеры модулей — общие объекты; в каждом тесте подключаем их заново
-        from bot.handlers import admin, attendance, start, tasks
+        from bot.handlers import admin, attendance, reports, start, tasks
 
-        for module in (admin, attendance, start, tasks):
+        for module in (admin, attendance, reports, start, tasks):
             module.router._parent_router = None
         self.dp.include_router(build_router())
 

@@ -26,18 +26,7 @@ router = Router()
 router.message.filter(F.chat.type == "private")
 
 # Кнопки меню не должны попадать в текст задачи или комментария
-MENU_BUTTONS = {
-    texts.BTN_CHECK_IN,
-    texts.BTN_FINISH_DAY,
-    texts.BTN_MY_TASKS,
-    texts.BTN_ADD_TASK,
-    texts.BTN_HELP,
-    texts.BTN_EMPLOYEES,
-    texts.BTN_ASSIGN,
-    texts.BTN_TASKS_DONE,
-    texts.BTN_SEND_LOCATION,
-    texts.BTN_CANCEL,
-}
+MENU_BUTTONS = texts.MENU_BUTTONS
 
 
 def today_for(settings: Settings) -> date:
