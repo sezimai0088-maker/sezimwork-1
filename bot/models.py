@@ -80,6 +80,63 @@ class Attendance(Base):
     employee: Mapped[Employee] = relationship(back_populates="attendances")
 
 
+class Task(Base):
+    """Задача сотрудника. При переносе на следующий день остаётся той же записью (тот же номер)."""
+
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    author_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    text: Mapped[str] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(String(20), default="new")
+    created_date: Mapped[date] = mapped_column(Date)
+    plan_date: Mapped[date] = mapped_column(Date, index=True)  # в плане какого дня задача сейчас
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    from_manager: Mapped[bool] = mapped_column(default=False)
+    accepted: Mapped[bool] = mapped_column(default=True)
+    not_done_streak: Mapped[int] = mapped_column(Integer, default=0)
+    blocked_streak: Mapped[int] = mapped_column(Integer, default=0)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    employee: Mapped[Employee] = relationship(foreign_keys=[employee_id])
+    author: Mapped[Employee | None] = relationship(foreign_keys=[author_id])
+
+
+class TaskReport(Base):
+    """Итог задачи за конкретный день: статус, причина, комментарий."""
+
+    __tablename__ = "task_reports"
+    __table_args__ = (UniqueConstraint("task_id", "work_date", name="uq_task_report_day"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    work_date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    task: Mapped[Task] = relationship()
+
+
+class TaskAlert(Base):
+    """Алерт руководителю о задаче, которая не выполняется несколько дней."""
+
+    __tablename__ = "task_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    days: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    acked_by_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    task: Mapped[Task] = relationship()
+
+
 class Setting(Base):
     """Настройки, которые меняются во время работы (например, ID общего чата)."""
 

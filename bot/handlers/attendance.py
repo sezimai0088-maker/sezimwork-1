@@ -5,7 +5,6 @@ from __future__ import annotations
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,17 +12,16 @@ from bot import keyboards, texts
 from bot.config import Settings
 from bot.geo import twogis_link
 from bot.handlers.menu import menu_for
+from bot.handlers.tasks import start_planning, start_report
 from bot.models import CheckoutMode, Employee
 from bot.services import attendance as att
+from bot.services import tasks as task_svc
 from bot.services.notify import send_to_group
+from bot.states import Checkout
 from bot.worktime import as_utc
 
 router = Router()
 router.message.filter(F.chat.type == "private")
-
-
-class Checkout(StatesGroup):
-    waiting_location = State()
 
 
 async def _require_employee(message: Message, employee: Employee | None) -> bool:
@@ -63,6 +61,9 @@ async def finish_day(
             texts.already_checked_out(as_utc(day.check_out_at).astimezone(settings.tz)),
             reply_markup=await menu_for(session, settings, employee),
         )
+        return
+    # Сначала итог по задачам, потом геолокация
+    if await start_report(message, state, session, employee, today):
         return
     await state.set_state(Checkout.waiting_location)
     await message.answer(texts.ASK_CHECKOUT_LOCATION, reply_markup=keyboards.checkout_location())
@@ -124,6 +125,9 @@ async def checkout_location(
             employee.full_name, at_local, worked, result.attendance.early_leave_minutes
         )
 
+    results = await task_svc.day_results(session, employee.id, today)
+    group_text += texts.tasks_block_for_group([(r.task.text, r.status, r.reason, r.comment) for r in results])
+
     sent = await send_to_group(bot, session, settings, group_text)
     await message.answer(
         texts.checked_out_private(at_local, worked, is_field),
@@ -138,7 +142,12 @@ async def checkout_location(
 
 @router.message(F.location)
 async def checkin_location(
-    message: Message, bot: Bot, session: AsyncSession, settings: Settings, employee: Employee | None
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    session: AsyncSession,
+    settings: Settings,
+    employee: Employee | None,
 ) -> None:
     if not await _require_employee(message, employee):
         return
@@ -180,6 +189,8 @@ async def checkin_location(
     await message.answer(texts.checked_in_private(at_local, day.late_minutes), reply_markup=menu)
     if not sent and employee.is_owner:
         await message.answer(texts.GROUP_NOT_SET)
+    # Сразу после прихода — план на день
+    await start_planning(message, state, session, employee, at_local.date())
 
 
 # ---------- Помощь ----------

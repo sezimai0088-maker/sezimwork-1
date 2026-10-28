@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     work_end: time = time(18, 0)
     grace_minutes: int = 5
     work_days: str = "1,2,3,4,5"
+    # Через сколько дней подряд «Не успел» руководитель получает алерт
+    alert_days: int = 2
 
     twogis_base_url: str = "https://2gis.kg"
     database_url: str = "sqlite+aiosqlite:///data/bot.db"

@@ -132,8 +132,13 @@ def checked_out_group_field(name: str, at_local: datetime, worked: int, link: st
 # Помощь
 HELP_EMPLOYEE = (
     "<b>Как пользоваться ботом</b>\n\n"
-    f"Утром в офисе — «{BTN_CHECK_IN}».\n"
-    f"Вечером — «{BTN_FINISH_DAY}», затем «{BTN_SEND_LOCATION}».\n\n"
+    "<b>Утром</b> в офисе — «🏢 Я в офисе», затем напишите задачи на день, каждую с новой строки, "
+    "и нажмите «✅ Готово».\n\n"
+    "<b>Днём</b> — «📋 Мои задачи» (отметить «Начал», изменить срок) и «➕ Добавить задачу».\n\n"
+    "<b>Вечером</b> — «🏁 Завершить день»: по каждой задаче выберите статус кнопкой, "
+    "затем «📍 Отправить местоположение».\n\n"
+    "Статусы: ✅ Выполнено · 🔄 В работе (продолжу завтра) · ⏳ Не успел · "
+    "🚧 Не по моей вине · ❌ Отменена.\n\n"
     "Если кнопки пропали — отправьте /start."
 )
 
@@ -152,3 +157,185 @@ GROUP_NOT_SET = (
     "Добавьте бота в общий чат и отправьте там /bind_chat."
 )
 CHAT_BOUND = "✅ Этот чат подключён: сюда будут приходить отметки сотрудников."
+
+
+# ================= Этап 2: задачи =================
+
+BTN_MY_TASKS = "📋 Мои задачи"
+BTN_ADD_TASK = "➕ Добавить задачу"
+BTN_TASKS_DONE = "✅ Готово"
+BTN_ASSIGN = "📌 Поставить задачу"
+
+STATUS_ICON = {
+    "new": "▫️",
+    "in_progress": "▶️",
+    "done": "✅",
+    "continue": "🔄",
+    "not_done": "⏳",
+    "blocked": "🚧",
+    "cancelled": "❌",
+}
+STATUS_LABEL = {
+    "new": "Новая",
+    "in_progress": "В работе",
+    "done": "Выполнено",
+    "continue": "В работе, продолжу",
+    "not_done": "Не успел",
+    "blocked": "Не по моей вине",
+    "cancelled": "Отменена",
+}
+REASON_LABEL = {
+    "materials": "нет материалов",
+    "waiting": "жду другого человека",
+    "equipment": "техника / транспорт",
+    "weather": "погода",
+    "manager": "руководитель изменил задачу",
+    "other": "другое",
+}
+
+CARRY_INTRO = "Вчера не закончены задачи. Отметьте, какие оставить на сегодня:"
+CARRY_HINT = "✅ — оставить на сегодня, 🗑 — убрать. 👤 — задача от руководителя, её убрать нельзя."
+ASK_NEW_TASKS = (
+    "Напишите задачи на сегодня — <b>каждую с новой строки</b>, одним сообщением.\n\n"
+    "Например:\n"
+    "<i>Сдать отчёт по объекту\n"
+    "Позвонить поставщику\n"
+    "Проверить склад</i>\n\n"
+    f"Когда закончите — нажмите «{BTN_TASKS_DONE}»."
+)
+ASK_MORE_TASKS = f"Можно дописать ещё задачи или нажать «{BTN_TASKS_DONE}»."
+NO_TASKS_IN_TEXT = "Не нашёл задач в сообщении. Напишите каждую задачу с новой строки."
+PLAN_EMPTY = "В плане на сегодня нет задач. Добавить их можно кнопкой «➕ Добавить задачу»."
+PLAN_CONFIRMED = "👍 План сохранён и отправлен в общий чат. Хорошего дня!"
+PLAN_EDIT_HINT = "Нажмите 🗑, чтобы убрать задачу. Задачи руководителя (👤) убрать нельзя."
+NEED_CHECK_IN_FOR_TASKS = f"Сначала отметьте приход кнопкой «{BTN_CHECK_IN}», потом можно будет написать задачи."
+
+
+def added_tasks(count: int, continued: int) -> str:
+    text = f"Добавлено задач: {count}."
+    if continued:
+        text += f"\n🔁 {continued} из них — продолжение незакрытых задач прошлых дней."
+    return text
+
+
+def due_suffix(due, today) -> str:
+    if due is None or due <= today:
+        return ""
+    return f" (срок до {due:%d.%m})"
+
+
+def task_line(task, today, *, with_status: bool = False) -> str:
+    icon = STATUS_ICON.get(task.status, "▫️") + " " if with_status else ""
+    manager = " 👤" if task.from_manager else ""
+    return f"{icon}{escape(task.text)}{manager}{due_suffix(task.due_date, today)}"
+
+
+def plan_text(tasks, today, *, title: str = "Ваш план на сегодня") -> str:
+    if not tasks:
+        return PLAN_EMPTY
+    lines = [f"<b>{title}:</b>"]
+    lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
+    return "\n".join(lines)
+
+
+def plan_group(name: str, tasks, today) -> str:
+    lines = [f"📋 <b>{escape(name)}</b> — план на сегодня:"]
+    lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
+    return "\n".join(lines)
+
+
+def my_tasks_text(tasks, today) -> str:
+    if not tasks:
+        return PLAN_EMPTY
+    lines = ["<b>Задачи на сегодня:</b>"]
+    lines += [f"{i}. {task_line(t, today, with_status=True)}" for i, t in enumerate(tasks, 1)]
+    lines.append("\n▶️ — отметить, что начали. 📅 — изменить срок.")
+    return "\n".join(lines)
+
+
+# Итог дня
+def report_question(index: int, total: int, task, today) -> str:
+    return f"Задача {index} из {total}:\n<b>{task_line(task, today)}</b>\n\nКак прошло?"
+
+
+ASK_REASON = "Что помешало?"
+ASK_COMMENT_OPTIONAL = "💬 Добавьте комментарий одним сообщением или нажмите «Пропустить»."
+ASK_COMMENT_REQUIRED = "💬 Напишите коротко причину — для этого статуса комментарий обязателен."
+
+
+def result_line(task_text: str, status: str, reason: str | None, comment: str | None) -> str:
+    parts = [f"{STATUS_ICON.get(status, '')} {escape(task_text)}"]
+    details = []
+    if status in ("not_done", "cancelled", "blocked", "continue"):
+        if reason:
+            details.append(REASON_LABEL.get(reason, reason))
+        elif status == "not_done":
+            details.append("не успел")
+    if comment:
+        details.append(escape(comment))
+    if details:
+        parts.append(" — " + "; ".join(details))
+    return "".join(parts)
+
+
+def report_summary(rows) -> str:
+    """rows: список (текст задачи, статус, причина, комментарий)."""
+    done = sum(1 for r in rows if r[1] == "done")
+    lines = [f"<b>Итог дня: выполнено {done} из {len(rows)}</b>", ""]
+    lines += [result_line(*r) for r in rows]
+    lines.append("\nВсё верно?")
+    return "\n".join(lines)
+
+
+def tasks_block_for_group(rows) -> str:
+    if not rows:
+        return ""
+    done = sum(1 for r in rows if r[1] == "done")
+    lines = [f"\nЗадачи: выполнено {done} из {len(rows)}"]
+    lines += [result_line(*r) for r in rows]
+    return "\n".join(lines)
+
+
+# Задачи от руководителя
+ASSIGN_CHOOSE_EMPLOYEE = "Кому поставить задачу?"
+ASSIGN_NO_EMPLOYEES = "Нет сотрудников. Владелец добавляет их командой /add."
+ASSIGN_DONE = "✅ Задача поставлена. Сотрудник получил уведомление."
+ASSIGN_DUE = "Какой срок?"
+
+
+def assign_ask_text(name: str) -> str:
+    return f"Напишите задачу для <b>{escape(name)}</b> одним сообщением."
+
+
+def new_task_from_manager(manager_name: str, text: str, due, today) -> str:
+    when = "сегодня" if due is None or due <= today else f"до {due:%d.%m}"
+    return f"👤 <b>Новая задача от {escape(manager_name)}</b>\n{escape(text)}\nСрок: {when}"
+
+
+def task_accepted_note(employee_name: str, text: str) -> str:
+    return f"👍 {escape(employee_name)} принял задачу: {escape(text)}"
+
+
+# Алерты
+def alert_text(kind: str, employee_name: str, task_text: str, days_count: int, history) -> str:
+    """history: список TaskReport за последние дни."""
+    days = ", ".join(f"{r.work_date:%d.%m} — {STATUS_LABEL.get(r.status, r.status).lower()}" for r in history)
+    comments = "; ".join(escape(r.comment) for r in history if r.comment)
+    if kind == "blocked":
+        head = (
+            f"🆘 <b>Сотруднику нужна помощь</b>\n{escape(employee_name)}: задача «{escape(task_text)}» "
+            f"не выполняется не по его вине {days_count} дн. подряд."
+        )
+    else:
+        head = (
+            f"⚠️ <b>Задача не выполняется</b>\nУ {escape(employee_name)} задача «{escape(task_text)}» "
+            f"не выполнена {days_count} дн. подряд."
+        )
+    text = f"{head}\n\n{days}"
+    if comments:
+        text += f"\nКомментарии: {comments}"
+    return text
+
+
+ALERT_ACKED = "👌 Принято"
+ALERT_TASK_CANCELLED = "❌ Задача отменена"
