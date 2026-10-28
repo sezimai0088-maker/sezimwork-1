@@ -349,3 +349,36 @@ def test_next_day_carry_over_and_alert_to_manager():
         assert "Принято" in edits[-1].text
 
     run(scenario)
+
+
+def test_owner_can_reset_today_for_testing():
+    async def scenario(h: Harness):
+        await onboard(h)
+        await h.location(OWNER, *OFFICE)
+        await h.text(OWNER, "Тестовая задача")
+        await h.text(OWNER, "✅ Готово")
+        await h.press(OWNER, h.find_button(OWNER, "✅ Всё верно"))
+        await h.text(OWNER, "🏁 Завершить день")
+        await h.press(OWNER, h.find_button(OWNER, "✅ Выполнено"))
+        await h.press(OWNER, h.find_button(OWNER, "Пропустить"))
+        await h.press(OWNER, h.find_button(OWNER, "✅ Отправить"))
+        await h.location(OWNER, *OFFICE)
+
+        # Сотрудник не может сбросить
+        await h.text(WORKER, "/reset_today")
+        assert "только владельцу" in h.tg.texts(WORKER)[-1]
+
+        await h.text(OWNER, "/reset_today")
+        assert "сброшены" in h.tg.texts(OWNER)[-1]
+        buttons = [b.text for row in h.tg.last_markup(OWNER).keyboard for b in row]
+        assert "🏢 Я в офисе" in buttons
+
+        # День проходится заново: приход и снова итог по той же задаче
+        await h.location(OWNER, *OFFICE)
+        assert "пришёл в офис" in h.tg.texts(GROUP_ID)[-1]
+        await h.text(OWNER, "✅ Готово")
+        await h.press(OWNER, h.find_button(OWNER, "✅ Всё верно"))
+        await h.text(OWNER, "🏁 Завершить день")
+        assert "Задача 1 из 1" in h.tg.texts(OWNER)[-1]
+
+    run(scenario)

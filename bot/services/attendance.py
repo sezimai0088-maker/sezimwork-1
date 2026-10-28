@@ -123,3 +123,30 @@ async def check_out(
     )
     await session.commit()
     return CheckOutResult(attendance=attendance, zone=zone, mode=mode)
+
+
+async def reset_day(session: AsyncSession, employee_id: int, day: date) -> None:
+    """Только для проверки бота владельцем: стирает отметку и итоги задач за день.
+
+    Задачи сегодняшнего плана возвращаются в статус «Новая», чтобы сценарий можно было пройти заново.
+    """
+    from sqlalchemy import delete
+
+    from bot.models import Task, TaskAlert, TaskReport
+    from bot.task_rules import TaskStatus
+
+    await session.execute(delete(Attendance).where(Attendance.employee_id == employee_id, Attendance.work_date == day))
+    reported = select(TaskReport.task_id).where(TaskReport.employee_id == employee_id, TaskReport.work_date == day)
+    task_ids = list(await session.scalars(reported))
+    if task_ids:
+        await session.execute(delete(TaskAlert).where(TaskAlert.task_id.in_(task_ids)))
+    await session.execute(
+        delete(TaskReport).where(TaskReport.employee_id == employee_id, TaskReport.work_date == day)
+    )
+    tasks = await session.scalars(select(Task).where(Task.employee_id == employee_id, Task.plan_date == day))
+    for task in tasks:
+        task.status = TaskStatus.NEW
+        task.closed_at = None
+        task.not_done_streak = 0
+        task.blocked_streak = 0
+    await session.commit()

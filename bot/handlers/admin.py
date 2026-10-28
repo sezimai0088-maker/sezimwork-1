@@ -8,6 +8,7 @@ from html import escape
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +17,7 @@ from bot.config import Settings
 from bot.models import Employee, Role
 from bot.phones import format_phone, normalize_phone
 from bot.services import employees as emp
-from bot.services.attendance import get_day
+from bot.services.attendance import get_day, reset_day
 from bot.worktime import as_utc
 
 router = Router()
@@ -116,3 +117,19 @@ async def cmd_bind_chat(message: Message, session: AsyncSession, employee: Emplo
         return
     await emp.set_setting(session, emp.GROUP_CHAT_KEY, str(message.chat.id))
     await message.reply(texts.CHAT_BOUND)
+
+
+@router.message(Command("reset_today"), F.chat.type == "private")
+async def cmd_reset_today(
+    message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
+) -> None:
+    """Для проверки: владелец сбрасывает свою сегодняшнюю отметку и итоги задач."""
+    if employee is None or not employee.is_owner:
+        await message.answer(texts.ADMIN_ONLY)
+        return
+    from bot.handlers.menu import menu_for
+
+    await state.clear()
+    today = datetime.now(timezone.utc).astimezone(settings.tz).date()
+    await reset_day(session, employee.id, today)
+    await message.answer(texts.RESET_DONE, reply_markup=await menu_for(session, settings, employee))
