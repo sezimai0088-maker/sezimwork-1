@@ -50,8 +50,12 @@ class FakeTelegram(BaseSession):
         self.calls.append(method)
         if isinstance(method, (SendMessage, SendDocument, EditMessageText, EditMessageReplyMarkup)):
             chat_id = getattr(method, "chat_id", None) or 0
+            msg_id = getattr(method, "message_id", None) if not isinstance(method, (SendMessage, SendDocument)) else None
+            msg_id = msg_id or next(self._ids)
+            if isinstance(method, SendMessage):
+                object.__setattr__(method, "_sent_id", msg_id)
             return Message(
-                message_id=next(self._ids),
+                message_id=msg_id,
                 date=datetime.now(timezone.utc),
                 chat=Chat(id=chat_id, type="private"),
                 text=getattr(method, "text", None) or "x",
@@ -63,6 +67,16 @@ class FakeTelegram(BaseSession):
 
     async def close(self) -> None:
         pass
+
+    def view(self, chat_id: int) -> dict[int, str]:
+        """Как сейчас выглядит чат: id сообщения → текст после всех правок."""
+        result: dict[int, str] = {}
+        for c in self.calls:
+            if isinstance(c, SendMessage) and c.chat_id == chat_id:
+                result[c._sent_id] = c.text
+            elif isinstance(c, EditMessageText) and c.chat_id == chat_id and c.message_id in result:
+                result[c.message_id] = c.text
+        return result
 
     def documents(self, chat_id: int) -> list[SendDocument]:
         return [c for c in self.calls if isinstance(c, SendDocument) and c.chat_id == chat_id]
@@ -152,7 +166,10 @@ class Harness:
             from_user=self._user(uid),
             chat_instance="ci",
             data=data,
-            message=self._msg(uid, text="Задача 1 из 1:\n<b>x</b>\n\nКак прошло?"),
+            # Как в настоящем Telegram: нажатая кнопка приходит вместе с сообщением и его кнопками
+            message=self._msg(
+                uid, text="Задача 1 из 1:\n<b>x</b>\n\nКак прошло?", reply_markup=self.tg.last_inline(uid)
+            ),
         )
         await self.feed(Update(update_id=next(self.ids), callback_query=cq))
 
@@ -204,13 +221,14 @@ def test_full_day_with_tasks():
         assert "Айбек Асанов</b> пришёл в офис" in group[-1]
         assert "каждую с новой строки" in h.tg.texts(WORKER)[-1]
 
-        # Пишет задачи списком, затем «Готово» и «Всё верно»
+        # Пишет задачи списком и просто отправляет — без «Готово» и подтверждения
         await h.text(WORKER, "1. Сдать отчёт\n2. Позвонить поставщику\n3. Проверить склад")
         assert "Добавлено задач: 3" in h.tg.texts(WORKER)[-1]
-        await h.text(WORKER, "✅ Готово")
-        await h.press(WORKER, h.find_button(WORKER, "✅ Всё верно"))
-        plan_msg = h.tg.texts(GROUP_ID)[-1]
-        assert "план на сегодня" in plan_msg and "Позвонить поставщику" in plan_msg
+        # В общем чате — одно сообщение: приход и план
+        chat = h.tg.view(GROUP_ID)
+        assert len(chat) == 1
+        day_msg_id, day_msg = next(iter(chat.items()))
+        assert "пришёл в офис" in day_msg and "План на день" in day_msg and "Позвонить поставщику" in day_msg
 
         # Руководитель ставит задачу, сотрудник принимает
         await h.text(MANAGER, "📌 Поставить задачу")
@@ -242,6 +260,9 @@ def test_full_day_with_tasks():
         # Уход в полях — ссылка 2ГИС и итог задач в общем чате
         await h.location(WORKER, OFFICE[0] + 0.05, OFFICE[1])
         out = h.tg.texts(GROUP_ID)[-1]
+        # Уход — ответом на сообщение о приходе (одна ветка дня)
+        assert h.tg.sent(GROUP_ID)[-1].reply_parameters.message_id == day_msg_id
+        assert "Заказать цемент" in h.tg.view(GROUP_ID)[day_msg_id]  # задача руководителя попала в план
         assert "завершил работу в полях" in out
         assert "2gis.kg/geo/" in out
         assert "выполнено 1 из 4" in out
@@ -255,15 +276,21 @@ def test_add_task_midday_and_my_tasks():
         await onboard(h)
         await h.location(WORKER, *OFFICE)
         await h.text(WORKER, "Первая задача")
-        await h.text(WORKER, "✅ Готово")
-        await h.press(WORKER, h.find_button(WORKER, "✅ Всё верно"))
 
         await h.text(WORKER, "➕ Добавить задачу")
         await h.text(WORKER, "Вторая задача")
-        await h.text(WORKER, "✅ Готово")
-        await h.press(WORKER, h.find_button(WORKER, "✅ Всё верно"))
-        assert "дополнил план" in h.tg.texts(GROUP_ID)[-1]
-        assert "Первая задача" not in h.tg.texts(GROUP_ID)[-1]
+        # Не новое сообщение в чате, а обновлённое сообщение дня
+        chat = h.tg.view(GROUP_ID)
+        assert len(chat) == 1
+        assert "Первая задача" in list(chat.values())[0] and "Вторая задача" in list(chat.values())[0]
+
+        # Можно просто написать ещё одну задачу — без кнопок
+        await h.text(WORKER, "Третья задача")
+        assert "Третья задача" in list(h.tg.view(GROUP_ID).values())[0]
+
+        # Убрать задачу кнопкой 🗑 — план в чате обновится
+        await h.press(WORKER, h.find_button(WORKER, "🗑 3."))
+        assert "Третья задача" not in list(h.tg.view(GROUP_ID).values())[0]
 
         await h.text(WORKER, "📋 Мои задачи")
         assert "Вторая задача" in h.tg.texts(WORKER)[-1]
@@ -312,8 +339,6 @@ def test_next_day_carry_over_and_alert_to_manager():
         # День 1: одна задача, «Не успел»
         await h.location(WORKER, *OFFICE)
         await h.text(WORKER, "Сдать отчёт по объекту\nУбрать склад")
-        await h.text(WORKER, "✅ Готово")
-        await h.press(WORKER, h.find_button(WORKER, "✅ Всё верно"))
         await h.text(WORKER, "🏁 Завершить день")
         await h.press(WORKER, h.find_button(WORKER, "⏳ Не успел"))
         await h.press(WORKER, h.find_button(WORKER, "Пропустить"))
@@ -328,12 +353,10 @@ def test_next_day_carry_over_and_alert_to_manager():
 
         # День 2: бот предлагает вчерашние задачи; «Убрать склад» убираем
         await h.location(WORKER, *OFFICE)
-        assert "Вчера не закончены" in h.tg.texts(WORKER)[-1]
-        await h.press(WORKER, h.find_button(WORKER, "✅ Убрать склад"))
-        await h.press(WORKER, h.find_button(WORKER, "Дальше"))
-        await h.text(WORKER, "✅ Готово")
-        await h.press(WORKER, h.find_button(WORKER, "✅ Всё верно"))
-        plan = h.tg.texts(GROUP_ID)[-1]
+        assert "Перенесены вчерашние" in h.tg.texts(WORKER)[-1]
+        await h.press(WORKER, h.find_button(WORKER, "🗑 2. Убрать склад"))
+        await h.press(WORKER, h.find_button(WORKER, "✅ Новых задач нет"))
+        plan = list(h.tg.view(GROUP_ID).values())[-1]
         assert "Сдать отчёт по объекту" in plan and "Убрать склад" not in plan
 
         # Второй день подряд «Не успел» → алерт руководителю, владельцу — нет
@@ -360,8 +383,6 @@ def test_owner_can_reset_today_for_testing():
         await onboard(h)
         await h.location(OWNER, *OFFICE)
         await h.text(OWNER, "Тестовая задача")
-        await h.text(OWNER, "✅ Готово")
-        await h.press(OWNER, h.find_button(OWNER, "✅ Всё верно"))
         await h.text(OWNER, "🏁 Завершить день")
         await h.press(OWNER, h.find_button(OWNER, "✅ Выполнено"))
         await h.press(OWNER, h.find_button(OWNER, "Пропустить"))
@@ -380,8 +401,6 @@ def test_owner_can_reset_today_for_testing():
         # День проходится заново: приход и снова итог по той же задаче
         await h.location(OWNER, *OFFICE)
         assert "пришёл в офис" in h.tg.texts(GROUP_ID)[-1]
-        await h.text(OWNER, "✅ Готово")
-        await h.press(OWNER, h.find_button(OWNER, "✅ Всё верно"))
         await h.text(OWNER, "🏁 Завершить день")
         assert "Задача 1 из 1" in h.tg.texts(OWNER)[-1]
 
@@ -438,8 +457,6 @@ def test_approximate_location_on_iphone_gets_clear_instructions():
         await h.location(WORKER, *OFFICE, acc=12)
         assert "пришёл в офис" in h.tg.texts(GROUP_ID)[-1]
         await h.text(WORKER, "Задача")
-        await h.text(WORKER, "✅ Готово")
-        await h.press(WORKER, h.find_button(WORKER, "✅ Всё верно"))
 
         # Уход с примерной геопозицией не превращается в «поле»: бот просит повторить
         await h.text(WORKER, "🏁 Завершить день")
@@ -452,5 +469,32 @@ def test_approximate_location_on_iphone_gets_clear_instructions():
         assert len(h.tg.texts(GROUP_ID)) == before
         await h.location(WORKER, *OFFICE, acc=15)
         assert "ушёл из офиса" in h.tg.texts(GROUP_ID)[-1]
+
+    run(scenario)
+
+
+def test_tasks_sent_one_by_one_and_after_restart():
+    async def scenario(h: Harness):
+        await onboard(h)
+        await h.location(WORKER, *OFFICE)
+        # Человек пишет задачи по одной — каждая сразу в плане
+        await h.text(WORKER, "Позвонить клиенту")
+        await h.text(WORKER, "Купить краску")
+        msg = list(h.tg.view(GROUP_ID).values())
+        assert len(msg) == 1 and "Позвонить клиенту" in msg[0] and "Купить краску" in msg[0]
+
+        # Старая кнопка «Готово» на телефоне не ломает ничего
+        await h.text(WORKER, "✅ Готово")
+        assert "Ваш план на сегодня" in h.tg.texts(WORKER)[-1]
+
+        # Бот перезапустили (шаг диалога забыт) — обычный текст всё равно становится задачей
+        await h.dp.storage.close()
+        h.dp.fsm.storage = type(h.dp.storage)()
+        await h.text(WORKER, "Отправить фото объекта")
+        assert "Отправить фото объекта" in list(h.tg.view(GROUP_ID).values())[0]
+
+        # Кто ещё не пришёл — получает подсказку, а не задачу
+        await h.text(MANAGER, "Какая-то задача")
+        assert "Сначала отметьте приход" in h.tg.texts(MANAGER)[-1]
 
     run(scenario)

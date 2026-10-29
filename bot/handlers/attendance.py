@@ -16,7 +16,7 @@ from bot.handlers.tasks import start_planning, start_report
 from bot.models import CheckoutMode, Employee
 from bot.services import attendance as att
 from bot.services import tasks as task_svc
-from bot.services.notify import send_to_group
+from bot.services import day_message
 from bot.states import Checkout
 from bot.worktime import as_utc
 
@@ -132,7 +132,7 @@ async def checkout_location(
     results = await task_svc.day_results(session, employee.id, today)
     group_text += texts.tasks_block_for_group([(r.task.text, r.status, r.reason, r.comment) for r in results])
 
-    sent = await send_to_group(bot, session, settings, group_text)
+    sent = await day_message.post_departure(bot, session, settings, result.attendance, group_text)
     await message.answer(
         texts.checked_out_private(at_local, worked, is_field),
         reply_markup=await menu_for(session, settings, employee),
@@ -187,14 +187,13 @@ async def checkin_location(
 
     day = result.attendance
     at_local = message.date.astimezone(settings.tz)
-    sent = await send_to_group(
-        bot, session, settings, texts.checked_in_group(employee.full_name, at_local, day.late_minutes, day.is_workday)
-    )
+    # Одно сообщение в общем чате: приход, а после задач — и план
+    sent = await day_message.refresh(bot, session, settings, employee, day.work_date)
     await message.answer(texts.checked_in_private(at_local, day.late_minutes), reply_markup=menu)
     if not sent and employee.is_owner:
         await message.answer(texts.GROUP_NOT_SET)
     # Сразу после прихода — план на день
-    await start_planning(message, state, session, employee, at_local.date())
+    await start_planning(message, state, bot, session, settings, employee, day.work_date)
 
 
 # ---------- Помощь ----------

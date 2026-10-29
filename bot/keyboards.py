@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from bot import texts
-from bot.callbacks import AcceptCb, AlertCb, AssignCb, CarryCb, PlanCb, ReportCb, ReportsCb, TaskCb, TsCb
+from bot.callbacks import AcceptCb, AlertCb, AssignCb, PlanCb, ReportCb, ReportsCb, TaskCb, TsCb
 from bot.models import Employee, Task
 from bot.task_rules import BlockReason, TaskStatus, due_options
 
@@ -36,10 +36,6 @@ def checkout_location() -> ReplyKeyboardMarkup:
     )
 
 
-def writing_tasks() -> ReplyKeyboardMarkup:
-    return _kb([[KeyboardButton(text=texts.BTN_TASKS_DONE)]])
-
-
 def main_menu(employee: Employee, *, checked_in: bool, checked_out: bool) -> ReplyKeyboardMarkup:
     """Главное меню зависит от того, отметился ли сотрудник сегодня."""
     if not checked_in:
@@ -59,36 +55,19 @@ def main_menu(employee: Employee, *, checked_in: bool, checked_out: bool) -> Rep
     return _kb(rows)
 
 
-# ---------- Утренний план ----------
+# ---------- План на день ----------
 
 
-def carry_choice(tasks: list[Task], keep_ids: set[int]) -> InlineKeyboardMarkup:
+def plan_buttons(tasks: list[Task], *, no_new_button: bool = False) -> InlineKeyboardMarkup | None:
+    """🗑 под каждой задачей, которую сотрудник может убрать, и (утром) «Новых задач нет»."""
     rows = []
-    for task in tasks:
-        if task.from_manager:
-            mark = "👤"
-        else:
-            mark = "✅" if task.id in keep_ids else "🗑"
-        label = f"{mark} {task.text}"[:60]
-        rows.append([_btn(label, CarryCb(action="toggle", task_id=task.id))])
-    rows.append([_btn("Дальше ▶️", CarryCb(action="next"))])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def plan_review() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[_btn("✅ Всё верно", PlanCb(action="ok")), _btn("✏️ Исправить", PlanCb(action="edit"))]]
-    )
-
-
-def plan_edit(tasks: list[Task]) -> InlineKeyboardMarkup:
-    rows = []
-    for task in tasks:
+    for i, task in enumerate(tasks, 1):
         if task.from_manager:
             continue
-        rows.append([_btn(f"🗑 {task.text}"[:60], PlanCb(action="del", task_id=task.id))])
-    rows.append([_btn("✅ Готово", PlanCb(action="ok"))])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        rows.append([_btn(f"🗑 {i}. {task.text}"[:60], PlanCb(action="del", task_id=task.id))])
+    if no_new_button:
+        rows.append([_btn(texts.BTN_NO_NEW_TASKS, PlanCb(action="none"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 # ---------- Мои задачи ----------

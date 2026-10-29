@@ -8,9 +8,7 @@ class Checkout(StatesGroup):
 
 
 class Plan(StatesGroup):
-    carry = State()      # выбор вчерашних задач
-    writing = State()    # ввод новых задач текстом
-    review = State()     # подтверждение плана
+    writing = State()    # ввод задач текстом: каждое сообщение сразу сохраняется
 
 
 class Report(StatesGroup):

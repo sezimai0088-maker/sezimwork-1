@@ -149,8 +149,8 @@ def checked_out_group_field(name: str, at_local: datetime, worked: int, link: st
 # Помощь
 HELP_EMPLOYEE = (
     "<b>Как пользоваться ботом</b>\n\n"
-    "<b>Утром</b> в офисе — «🏢 Я в офисе», затем напишите задачи на день, каждую с новой строки, "
-    "и нажмите «✅ Готово».\n\n"
+    "<b>Утром</b> в офисе — «🏢 Я в офисе», затем напишите задачи на день одним сообщением, "
+    "каждую с новой строки, и отправьте. Забыли задачу — просто напишите её боту.\n\n"
     "<b>Днём</b> — «📋 Мои задачи» (отметить «Начал», изменить срок) и «➕ Добавить задачу».\n\n"
     "<b>Вечером</b> — «🏁 Завершить день»: по каждой задаче выберите статус кнопкой, "
     "затем «📍 Отправить местоположение».\n\n"
@@ -216,29 +216,47 @@ REASON_LABEL = {
     "other": "другое",
 }
 
-CARRY_INTRO = "Вчера не закончены задачи. Отметьте, какие оставить на сегодня:"
-CARRY_HINT = "✅ — оставить на сегодня, 🗑 — убрать. 👤 — задача от руководителя, её убрать нельзя."
 ASK_NEW_TASKS = (
-    "Напишите задачи на сегодня — <b>каждую с новой строки</b>, одним сообщением.\n\n"
+    "📝 Напишите задачи на сегодня — <b>каждую с новой строки</b>, одним сообщением.\n\n"
     "Например:\n"
     "<i>Сдать отчёт по объекту\n"
     "Позвонить поставщику\n"
     "Проверить склад</i>\n\n"
-    f"Когда закончите — нажмите «{BTN_TASKS_DONE}»."
+    "Отправьте сообщение — и план сразу уйдёт в общий чат."
 )
-ASK_MORE_TASKS = f"Можно дописать ещё задачи или нажать «{BTN_TASKS_DONE}»."
+ASK_ADD_TASKS = "📝 Напишите задачи, которые нужно добавить, — каждую с новой строки. Отправьте — и они сразу добавятся в план."
 NO_TASKS_IN_TEXT = "Не нашёл задач в сообщении. Напишите каждую задачу с новой строки."
-PLAN_EMPTY = "В плане на сегодня нет задач. Добавить их можно кнопкой «➕ Добавить задачу»."
-PLAN_CONFIRMED = "👍 План сохранён и отправлен в общий чат. Хорошего дня!"
-PLAN_EDIT_HINT = "Нажмите 🗑, чтобы убрать задачу. Задачи руководителя (👤) убрать нельзя."
+PLAN_EMPTY = "В плане на сегодня нет задач. Чтобы добавить — нажмите «➕ Добавить задачу» или просто напишите задачу сюда."
+NO_NEW_TASKS_OK = "👍 Хорошо, работаем по перенесённым задачам. Хорошего дня!"
 NEED_CHECK_IN_FOR_TASKS = f"Сначала отметьте приход кнопкой «{BTN_CHECK_IN}», потом можно будет написать задачи."
+DAY_CLOSED_FOR_TASKS = "Рабочий день уже завершён — задачи можно будет написать завтра после прихода."
+BTN_NO_NEW_TASKS = "✅ Новых задач нет"
 
 
-def added_tasks(count: int, continued: int) -> str:
-    text = f"Добавлено задач: {count}."
+def carried_intro(tasks, today) -> str:
+    lines = ["🔁 <b>Перенесены вчерашние незакрытые задачи:</b>"]
+    lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
+    lines.append("\nЛишнюю можно убрать кнопкой 🗑 ниже.\n")
+    return "\n".join(lines) + "\n" + ASK_NEW_TASKS
+
+
+def plan_saved(tasks, today, added: int, continued: int) -> str:
+    head = f"✅ Добавлено задач: {added}. План отправлен в общий чат."
     if continued:
-        text += f"\n🔁 {continued} из них — продолжение незакрытых задач прошлых дней."
-    return text
+        head += f"\n🔁 {continued} из них — продолжение незакрытых задач прошлых дней."
+    lines = [head, "", "<b>Ваш план на сегодня:</b>"]
+    lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
+    lines.append("\nЗабыли задачу — просто напишите её сюда.")
+    return "\n".join(lines)
+
+
+def plan_after_delete(tasks, today) -> str:
+    if not tasks:
+        return PLAN_EMPTY
+    lines = ["<b>Ваш план на сегодня:</b>"]
+    lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
+    lines.append("\nЗабыли задачу — просто напишите её сюда.")
+    return "\n".join(lines)
 
 
 def due_suffix(due, today) -> str:
@@ -257,12 +275,6 @@ def plan_text(tasks, today, *, title: str = "Ваш план на сегодня
     if not tasks:
         return PLAN_EMPTY
     lines = [f"<b>{title}:</b>"]
-    lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
-    return "\n".join(lines)
-
-
-def plan_group(name: str, tasks, today) -> str:
-    lines = [f"📋 <b>{escape(name)}</b> — план на сегодня:"]
     lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
     return "\n".join(lines)
 
@@ -412,3 +424,13 @@ MENU_BUTTONS = frozenset(
         BTN_TASKS_DONE, BTN_SEND_LOCATION, BTN_CANCEL, BTN_REPORTS, BTN_TIMESHEET, BTN_SHARE_PHONE,
     }
 )
+
+
+def day_message(name: str, at_local, late: int, workday: bool, tasks, today) -> str:
+    """Сообщение дня в общем чате: приход и план одним сообщением."""
+    text = checked_in_group(name, at_local, late, workday)
+    if tasks:
+        text += "\n\n📋 <b>План на день:</b>\n" + "\n".join(
+            f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)
+        )
+    return text

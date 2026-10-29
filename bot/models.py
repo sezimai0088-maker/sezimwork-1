@@ -82,6 +82,9 @@ class Attendance(Base):
     early_leave_minutes: Mapped[int] = mapped_column(Integer, default=0)
     worked_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     corrected: Mapped[bool | None] = mapped_column(default=False, nullable=True)  # время правил руководитель
+    # Сообщение о приходе в общем чате: его обновляем (план), на него отвечаем уходом
+    group_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    group_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     employee: Mapped[Employee] = relationship(back_populates="attendances")
 

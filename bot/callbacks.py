@@ -3,13 +3,8 @@
 from aiogram.filters.callback_data import CallbackData
 
 
-class CarryCb(CallbackData, prefix="cr"):
-    action: str          # toggle | next
-    task_id: int = 0
-
-
 class PlanCb(CallbackData, prefix="pl"):
-    action: str          # ok | edit | del | back
+    action: str          # del | none
     task_id: int = 0
 
 

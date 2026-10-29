@@ -12,11 +12,12 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot import keyboards, texts
-from bot.callbacks import AcceptCb, AlertCb, AssignCb, CarryCb, PlanCb, ReportCb, TaskCb
+from bot.callbacks import AcceptCb, AlertCb, AssignCb, PlanCb, ReportCb, TaskCb
 from bot.config import Settings
 from bot.handlers.menu import menu_for
 from bot.models import Employee
 from bot.services import attendance as att
+from bot.services import day_message
 from bot.services import tasks as svc
 from bot.services.notify import send_to_group
 from bot.states import Assign, Checkout, Plan, Report
@@ -40,108 +41,112 @@ async def _safe_edit(message: Message, text: str, reply_markup=None) -> None:
         pass  # сообщение не изменилось или слишком старое
 
 
-# ======================= Утренний план =======================
+# ======================= План на день =======================
+#
+# Без кнопок «Готово» и «Всё верно»: каждое сообщение с задачами сразу сохраняется
+# и обновляет сообщение дня в общем чате. Лишнее убирается кнопкой 🗑.
+
+
+async def _open_plan(session: AsyncSession, employee: Employee, today: date) -> list:
+    return [
+        t for t in await svc.today_tasks(session, employee.id, today)
+        if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)
+    ]
+
+
+async def _day_open(session: AsyncSession, employee: Employee, today: date):
+    """Сегодняшняя отметка, если день начат и ещё не завершён."""
+    day = await att.get_day(session, employee.id, today)
+    return day if day is not None and day.check_out_at is None else None
 
 
 async def start_planning(
-    message: Message, state: FSMContext, session: AsyncSession, employee: Employee, today: date
-) -> None:
-    """Вызывается сразу после отметки прихода."""
-    carry = await svc.carry_candidates(session, employee.id, today)
-    if carry:
-        keep = [t.id for t in carry]
-        await state.set_state(Plan.carry)
-        await state.update_data(carry_ids=keep, keep_ids=keep, mode="morning", before_ids=[])
-        await message.answer(
-            f"{texts.CARRY_INTRO}\n\n<i>{texts.CARRY_HINT}</i>", reply_markup=keyboards.carry_choice(carry, set(keep))
-        )
-        return
-    await _begin_writing(message, state, mode="morning", before_ids=[])
-
-
-async def _begin_writing(message: Message, state: FSMContext, *, mode: str, before_ids: list[int]) -> None:
-    await state.set_state(Plan.writing)
-    await state.update_data(mode=mode, before_ids=before_ids)
-    await message.answer(texts.ASK_NEW_TASKS, reply_markup=keyboards.writing_tasks())
-
-
-@router.callback_query(StateFilter(Plan.carry), CarryCb.filter(F.action == "toggle"))
-async def carry_toggle(
-    callback: CallbackQuery,
-    callback_data: CarryCb,
+    message: Message,
     state: FSMContext,
+    bot: Bot,
     session: AsyncSession,
     settings: Settings,
-    employee: Employee | None,
+    employee: Employee,
+    today: date,
 ) -> None:
-    if employee is None:
-        return await callback.answer()
-    data = await state.get_data()
-    keep = set(data.get("keep_ids", []))
-    keep.symmetric_difference_update({callback_data.task_id})
-    await state.update_data(keep_ids=list(keep))
-    candidates = await svc.carry_candidates(session, employee.id, today_for(settings))
-    tasks = [t for t in candidates if t.id in data["carry_ids"]]
-    try:
-        await callback.message.edit_reply_markup(reply_markup=keyboards.carry_choice(tasks, keep))
-    except TelegramBadRequest:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(StateFilter(Plan.carry), CarryCb.filter(F.action == "next"))
-async def carry_next(
-    callback: CallbackQuery, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
-) -> None:
-    if employee is None:
-        return await callback.answer()
-    today = today_for(settings)
-    data = await state.get_data()
-    tasks = [t for t in await svc.carry_candidates(session, employee.id, today) if t.id in data["carry_ids"]]
-    await svc.keep_for_today(session, tasks, set(data.get("keep_ids", [])), today)
-    kept = await svc.today_tasks(session, employee.id, today)
-    await _safe_edit(callback.message, texts.plan_text(kept, today, title="Перенесено на сегодня"))
-    await callback.answer()
-    await _begin_writing(callback.message, state, mode="morning", before_ids=[])
-
-
-@router.message(StateFilter(Plan.writing), F.text == texts.BTN_TASKS_DONE)
-@router.message(StateFilter(Plan.review), F.text == texts.BTN_TASKS_DONE)
-async def writing_done(
-    message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
-) -> None:
-    if employee is None:
+    """Сразу после прихода: переносим вчерашние незакрытые задачи и просим написать новые."""
+    carry = await svc.carry_candidates(session, employee.id, today)
+    await state.set_state(Plan.writing)
+    if carry:
+        await svc.keep_for_today(session, carry, {t.id for t in carry}, today)
+        await day_message.refresh(bot, session, settings, employee, today)
+        tasks = await _open_plan(session, employee, today)
+        await message.answer(
+            texts.carried_intro(tasks, today), reply_markup=keyboards.plan_buttons(tasks, no_new_button=True)
+        )
         return
-    today = today_for(settings)
-    tasks = await svc.today_tasks(session, employee.id, today)
-    tasks = [t for t in tasks if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)]
-    if not tasks:
-        await state.clear()
-        await message.answer(texts.PLAN_EMPTY, reply_markup=await menu_for(session, settings, employee))
-        return
-    await state.set_state(Plan.review)
-    await message.answer(texts.plan_text(tasks, today), reply_markup=keyboards.plan_review())
+    await message.answer(texts.ASK_NEW_TASKS)
 
 
-@router.message(StateFilter(Plan.writing), F.text, ~F.text.in_(MENU_BUTTONS), ~F.text.startswith("/"))
-async def writing_tasks(
-    message: Message, session: AsyncSession, settings: Settings, employee: Employee | None
+async def _save_tasks(
+    message: Message, bot: Bot, session: AsyncSession, settings: Settings, employee: Employee
 ) -> None:
-    if employee is None:
+    today = today_for(settings)
+    if await _day_open(session, employee, today) is None:
+        day = await att.get_day(session, employee.id, today)
+        await message.answer(
+            texts.DAY_CLOSED_FOR_TASKS if day else texts.NEED_CHECK_IN_FOR_TASKS,
+            reply_markup=await menu_for(session, settings, employee),
+        )
         return
     lines = parse_task_lines(message.text)
     if not lines:
         await message.answer(texts.NO_TASKS_IN_TEXT)
         return
-    added = await svc.add_tasks(session, employee, lines, today_for(settings))
+    added = await svc.add_tasks(session, employee, lines, today)
     continued = sum(1 for a in added if a.continued)
-    await message.answer(f"{texts.added_tasks(len(added), continued)}\n{texts.ASK_MORE_TASKS}")
+    await day_message.refresh(bot, session, settings, employee, today)
+    tasks = await _open_plan(session, employee, today)
+    await message.answer(
+        texts.plan_saved(tasks, today, len(added), continued), reply_markup=keyboards.plan_buttons(tasks)
+    )
 
 
-@router.callback_query(StateFilter(Plan.review), PlanCb.filter(F.action == "ok"))
-async def plan_ok(
+@router.message(StateFilter(Plan.writing), F.text == texts.BTN_TASKS_DONE)
+async def old_done_button(
+    message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
+) -> None:
+    """Кнопка «Готово» из старой версии: задачи уже сохранены, просто возвращаем меню."""
+    await state.clear()
+    if employee is None:
+        return
+    tasks = await _open_plan(session, employee, today_for(settings))
+    await message.answer(
+        texts.plan_after_delete(tasks, today_for(settings)), reply_markup=await menu_for(session, settings, employee)
+    )
+
+
+@router.message(StateFilter(Plan.writing), F.text, ~F.text.in_(MENU_BUTTONS), ~F.text.startswith("/"))
+async def writing_tasks(
+    message: Message, bot: Bot, session: AsyncSession, settings: Settings, employee: Employee | None
+) -> None:
+    if employee is None:
+        return
+    await _save_tasks(message, bot, session, settings, employee)
+
+
+@router.callback_query(PlanCb.filter(F.action == "none"))
+async def no_new_tasks(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
+) -> None:
+    if employee is None:
+        return await callback.answer()
+    today = today_for(settings)
+    tasks = await _open_plan(session, employee, today)
+    await _safe_edit(callback.message, texts.plan_after_delete(tasks, today), keyboards.plan_buttons(tasks))
+    await callback.answer()
+    await callback.message.answer(texts.NO_NEW_TASKS_OK, reply_markup=await menu_for(session, settings, employee))
+
+
+@router.callback_query(PlanCb.filter(F.action == "del"))
+async def plan_delete(
     callback: CallbackQuery,
-    state: FSMContext,
+    callback_data: PlanCb,
     bot: Bot,
     session: AsyncSession,
     settings: Settings,
@@ -150,58 +155,22 @@ async def plan_ok(
     if employee is None:
         return await callback.answer()
     today = today_for(settings)
-    data = await state.get_data()
-    tasks = [
-        t for t in await svc.today_tasks(session, employee.id, today)
-        if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)
-    ]
-    await state.clear()
-    await _safe_edit(callback.message, texts.plan_text(tasks, today))
-    await callback.answer("Сохранено")
-
-    if data.get("mode") == "add":
-        before = set(data.get("before_ids", []))
-        new_tasks = [t for t in tasks if t.id not in before]
-        if new_tasks:
-            await send_to_group(bot, session, settings, texts.plan_group(employee.full_name, new_tasks, today)
-                                .replace("план на сегодня", "дополнил план"))
-    elif tasks:
-        await send_to_group(bot, session, settings, texts.plan_group(employee.full_name, tasks, today))
-    await callback.message.answer(texts.PLAN_CONFIRMED, reply_markup=await menu_for(session, settings, employee))
-
-
-@router.callback_query(StateFilter(Plan.review), PlanCb.filter(F.action == "edit"))
-async def plan_edit(callback: CallbackQuery, session: AsyncSession, settings: Settings, employee: Employee | None) -> None:
-    if employee is None:
-        return await callback.answer()
-    today = today_for(settings)
-    tasks = [
-        t for t in await svc.today_tasks(session, employee.id, today)
-        if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)
-    ]
-    await _safe_edit(
-        callback.message, f"{texts.plan_text(tasks, today)}\n\n<i>{texts.PLAN_EDIT_HINT}</i>", keyboards.plan_edit(tasks)
-    )
-    await callback.answer()
-
-
-@router.callback_query(StateFilter(Plan.review), PlanCb.filter(F.action == "del"))
-async def plan_delete(
-    callback: CallbackQuery, callback_data: PlanCb, session: AsyncSession, settings: Settings, employee: Employee | None
-) -> None:
-    if employee is None:
-        return await callback.answer()
+    if await _day_open(session, employee, today) is None:
+        return await callback.answer(texts.DAY_CLOSED_FOR_TASKS, show_alert=True)
     task = await svc.get_task(session, callback_data.task_id)
-    if task is not None and task.employee_id == employee.id:
-        await svc.remove_from_today(session, task)
-    today = today_for(settings)
-    tasks = [
-        t for t in await svc.today_tasks(session, employee.id, today)
-        if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)
-    ]
-    await _safe_edit(
-        callback.message, f"{texts.plan_text(tasks, today)}\n\n<i>{texts.PLAN_EDIT_HINT}</i>", keyboards.plan_edit(tasks)
-    )
+    if task is None or task.employee_id != employee.id or not await svc.remove_from_today(session, task):
+        return await callback.answer("Эту задачу убрать нельзя")
+    await day_message.refresh(bot, session, settings, employee, today)
+    tasks = await _open_plan(session, employee, today)
+    # Утреннее сообщение с перенесёнными задачами остаётся приглашением написать новые
+    none_cb = PlanCb(action="none").pack()
+    markup = callback.message.reply_markup
+    morning = markup is not None and any(b.callback_data == none_cb for row in markup.inline_keyboard for b in row)
+    if morning:
+        text = texts.carried_intro(tasks, today) if tasks else texts.ASK_NEW_TASKS
+    else:
+        text = texts.plan_after_delete(tasks, today)
+    await _safe_edit(callback.message, text, keyboards.plan_buttons(tasks, no_new_button=morning and bool(tasks)))
     await callback.answer("Убрано")
 
 
@@ -215,11 +184,15 @@ async def add_task_button(
     if employee is None:
         return
     today = today_for(settings)
-    if await att.get_day(session, employee.id, today) is None:
+    day = await att.get_day(session, employee.id, today)
+    if day is None:
         await message.answer(texts.NEED_CHECK_IN_FOR_TASKS)
         return
-    before = [t.id for t in await svc.today_tasks(session, employee.id, today)]
-    await _begin_writing(message, state, mode="add", before_ids=before)
+    if day.check_out_at is not None:
+        await message.answer(texts.DAY_CLOSED_FOR_TASKS)
+        return
+    await state.set_state(Plan.writing)
+    await message.answer(texts.ASK_ADD_TASKS)
 
 
 async def _show_my_tasks(target: Message, session: AsyncSession, employee: Employee, today: date, *, edit: bool) -> None:
@@ -500,6 +473,8 @@ async def assign_due(
     added = await svc.add_tasks(session, target, [data["assign_text"]], today, author=employee, due_date=due)
     task = added[0].task
     await state.clear()
+    if await _day_open(session, target, today) is not None:
+        await day_message.refresh(bot, session, settings, target, today)
     await _safe_edit(callback.message, f"{texts.ASSIGN_DUE} {keyboards.DUE_LABELS.get(callback_data.value, '')}")
     await callback.answer()
 
@@ -533,6 +508,25 @@ async def accept(
             await bot.send_message(author.telegram_id, texts.task_accepted_note(employee.full_name, task.text))
         except Exception:  # noqa: BLE001
             pass
+
+
+# Сотрудник просто написал текст, без кнопок: если день начат — это задачи
+@router.message(StateFilter(None), F.text, ~F.text.in_(MENU_BUTTONS), ~F.text.startswith("/"))
+async def free_text_as_tasks(
+    message: Message, state: FSMContext, bot: Bot, session: AsyncSession, settings: Settings, employee: Employee | None
+) -> None:
+    if employee is None:
+        return
+    today = today_for(settings)
+    if await _day_open(session, employee, today) is None:
+        day = await att.get_day(session, employee.id, today)
+        await message.answer(
+            texts.DAY_CLOSED_FOR_TASKS if day else texts.NEED_CHECK_IN_FOR_TASKS,
+            reply_markup=await menu_for(session, settings, employee),
+        )
+        return
+    await state.set_state(Plan.writing)
+    await _save_tasks(message, bot, session, settings, employee)
 
 
 # Нажатие на старую кнопку, когда шаг уже пройден
