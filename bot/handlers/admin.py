@@ -23,6 +23,7 @@ from bot.worktime import as_utc
 router = Router()
 
 ROLE_NAMES = {Role.OWNER: "владелец", Role.MANAGER: "руководитель", Role.EMPLOYEE: "сотрудник"}
+COMMAND_ROLES = {"add": Role.EMPLOYEE, "add_manager": Role.MANAGER, "add_owner": Role.OWNER}
 ADD_USAGE = "Формат: <code>/add +996555123456 Имя Фамилия</code>"
 
 
@@ -47,7 +48,7 @@ async def cmd_admin(message: Message, employee: Employee | None) -> None:
     await message.answer(texts.HELP_ADMIN)
 
 
-@router.message(Command("add", "add_manager"), F.chat.type == "private")
+@router.message(Command("add", "add_manager", "add_owner"), F.chat.type == "private")
 async def cmd_add(message: Message, command: CommandObject, session: AsyncSession, employee: Employee | None) -> None:
     if employee is None or not employee.is_owner:
         await message.answer(texts.ADMIN_ONLY)
@@ -58,8 +59,11 @@ async def cmd_add(message: Message, command: CommandObject, session: AsyncSessio
         await message.answer(f"Не понял номер или имя.\n{usage}")
         return
     phone, name = parsed
-    role = Role.MANAGER if command.command == "add_manager" else Role.EMPLOYEE
+    role = COMMAND_ROLES[command.command]
     new, created = await emp.add_employee(session, phone=phone, full_name=name, role=role)
+    if role == Role.OWNER and new.role != Role.OWNER:
+        new.role = Role.OWNER
+        await session.commit()
     action = "Добавлен" if created else "Обновлён"
     await message.answer(
         f"✅ {action}: <b>{escape(new.full_name)}</b>, {format_phone(new.phone)} — {ROLE_NAMES[Role(new.role)]}.\n\n"
@@ -75,7 +79,11 @@ async def cmd_remove(message: Message, command: CommandObject, session: AsyncSes
     if not command.args:
         await message.answer("Формат: <code>/remove +996555123456</code>")
         return
-    removed = await emp.deactivate(session, command.args)
+    try:
+        removed = await emp.deactivate(session, command.args, actor=employee)
+    except emp.RemoveError as error:
+        await message.answer(f"⚠️ {error}")
+        return
     if removed is None:
         await message.answer("Сотрудник с таким номером не найден.")
         return

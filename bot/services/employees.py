@@ -45,8 +45,12 @@ async def register_by_contact(
     telegram_name: str,
     owner_phone: str,
 ) -> RegisterResult:
-    """Привязывает Telegram-аккаунт к сотруднику по номеру телефона."""
+    """Привязывает Telegram-аккаунт к сотруднику по номеру телефона.
+
+    owner_phone — один номер или несколько через запятую (номера владельцев из .env).
+    """
     phone = normalize_phone(phone)
+    owner_phones = {normalize_phone(p) for p in owner_phone.split(",") if p.strip()}
 
     existing = await get_by_telegram(session, telegram_id)
     if existing is not None:
@@ -54,7 +58,7 @@ async def register_by_contact(
 
     employee = await get_by_phone(session, phone)
 
-    if employee is None and phone == owner_phone:
+    if employee is None and phone in owner_phones:
         employee = Employee(phone=phone, full_name=telegram_name or "Владелец", role=Role.OWNER)
         session.add(employee)
         employee.telegram_id = telegram_id
@@ -68,7 +72,7 @@ async def register_by_contact(
     if employee.telegram_id is not None and employee.telegram_id != telegram_id:
         return RegisterResult(RegisterStatus.PHONE_TAKEN, employee)
 
-    if phone == owner_phone:
+    if phone in owner_phones:
         employee.role = Role.OWNER
     employee.telegram_id = telegram_id
     await session.commit()
@@ -94,10 +98,20 @@ async def add_employee(
     return employee, created
 
 
-async def deactivate(session: AsyncSession, phone: str) -> Employee | None:
+class RemoveError(Exception):
+    pass
+
+
+async def deactivate(session: AsyncSession, phone: str, actor: Employee | None = None) -> Employee | None:
+    """Отключает сотрудника. Владельца может отключить только другой владелец; себя отключить нельзя."""
     employee = await get_by_phone(session, phone)
-    if employee is None or employee.role == Role.OWNER:
+    if employee is None:
         return None
+    if employee.role == Role.OWNER:
+        if actor is None or actor.id == employee.id:
+            raise RemoveError("Себя отключить нельзя.")
+        if await count_owners(session) <= 1:
+            raise RemoveError("Нельзя отключить последнего владельца.")
     employee.is_active = False
     employee.telegram_id = None
     await session.commit()
@@ -128,3 +142,11 @@ async def set_setting(session: AsyncSession, key: str, value: str) -> None:
 async def get_group_chat_id(session: AsyncSession, fallback: int | None) -> int | None:
     value = await get_setting(session, GROUP_CHAT_KEY)
     return int(value) if value else fallback
+
+
+async def count_owners(session: AsyncSession) -> int:
+    from sqlalchemy import func
+
+    return await session.scalar(
+        select(func.count()).select_from(Employee).where(Employee.role == Role.OWNER, Employee.is_active.is_(True))
+    )

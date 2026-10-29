@@ -386,3 +386,36 @@ def test_owner_can_reset_today_for_testing():
         assert "Задача 1 из 1" in h.tg.texts(OWNER)[-1]
 
     run(scenario)
+
+
+def test_second_owner_by_command_and_removal_rules():
+    async def scenario(h: Harness):
+        await onboard(h)
+        PROG = 400
+        # Руководитель не может добавить владельца
+        await h.text(MANAGER, "/add_owner +996700000400 Программист")
+        assert "только владельцу" in h.tg.texts(MANAGER)[-1]
+
+        await h.text(OWNER, "/add_owner +996700000400 Программист")
+        assert "владелец" in h.tg.texts(OWNER)[-1]
+        await h.text(PROG, "/start")
+        await h.contact(PROG, "+996700000400")
+        await h.text(PROG, "/admin")
+        assert "Команды владельца" in h.tg.texts(PROG)[-1]
+
+        # Себя отключить нельзя, другого владельца — можно, последнего — нельзя
+        await h.text(PROG, "/remove +996700000400")
+        assert "Себя отключить нельзя" in h.tg.texts(PROG)[-1]
+        await h.text(OWNER, "/remove +996700000400")
+        assert "Отключён" in h.tg.texts(OWNER)[-1]
+        await h.text(OWNER, "/remove +996700000100")
+        assert "Себя отключить нельзя" in h.tg.texts(OWNER)[-1]
+
+    run(scenario)
+
+
+def test_several_owner_phones_in_settings():
+    from bot.config import Settings as S
+
+    s = S(_env_file=None, bot_token="t", owner_phone="+996 555 111 111, 0555222222", office_lat=1, office_lon=1)
+    assert s.owner_phones == {"996555111111", "996555222222"}

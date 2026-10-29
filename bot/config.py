@@ -53,7 +53,12 @@ class Settings(BaseSettings):
     @field_validator("owner_phone")
     @classmethod
     def _normalize_owner(cls, value: str) -> str:
-        return normalize_phone(value)
+        # Можно указать несколько владельцев через запятую: +996555111111,+996555222222
+        return ",".join(p for p in (normalize_phone(x) for x in value.split(",")) if p)
+
+    @property
+    def owner_phones(self) -> frozenset[str]:
+        return frozenset(p for p in self.owner_phone.split(",") if p)
 
     @cached_property
     def tz(self) -> ZoneInfo:
