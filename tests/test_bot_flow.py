@@ -419,3 +419,38 @@ def test_several_owner_phones_in_settings():
 
     s = S(_env_file=None, bot_token="t", owner_phone="+996 555 111 111, 0555222222", office_lat=1, office_lon=1)
     assert s.owner_phones == {"996555111111", "996555222222"}
+
+
+def test_approximate_location_on_iphone_gets_clear_instructions():
+    async def scenario(h: Harness):
+        await onboard(h)
+        # «Точная геопозиция» выключена: iOS присылает погрешность в километры
+        await h.location(WORKER, *OFFICE, acc=3200)
+        text = h.tg.texts(WORKER)[-1]
+        assert "примерное место" in text and "3 км" in text and "Точная геопозиция" in text
+        assert not h.tg.sent(GROUP_ID)
+
+        # Просто неточный GPS в здании — короткая подсказка про окно
+        await h.location(WORKER, *OFFICE, acc=250)
+        assert "Подойдите к окну" in h.tg.texts(WORKER)[-1]
+
+        # Точная — приход засчитан
+        await h.location(WORKER, *OFFICE, acc=12)
+        assert "пришёл в офис" in h.tg.texts(GROUP_ID)[-1]
+        await h.text(WORKER, "Задача")
+        await h.text(WORKER, "✅ Готово")
+        await h.press(WORKER, h.find_button(WORKER, "✅ Всё верно"))
+
+        # Уход с примерной геопозицией не превращается в «поле»: бот просит повторить
+        await h.text(WORKER, "🏁 Завершить день")
+        await h.press(WORKER, h.find_button(WORKER, "✅ Выполнено"))
+        await h.press(WORKER, h.find_button(WORKER, "Пропустить"))
+        await h.press(WORKER, h.find_button(WORKER, "✅ Отправить"))
+        before = len(h.tg.texts(GROUP_ID))
+        await h.location(WORKER, *OFFICE, acc=5000)
+        assert "Точная геопозиция" in h.tg.texts(WORKER)[-1]
+        assert len(h.tg.texts(GROUP_ID)) == before
+        await h.location(WORKER, *OFFICE, acc=15)
+        assert "ушёл из офиса" in h.tg.texts(GROUP_ID)[-1]
+
+    run(scenario)

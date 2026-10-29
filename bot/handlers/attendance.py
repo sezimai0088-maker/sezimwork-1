@@ -102,6 +102,10 @@ async def checkout_location(
         return
 
     loc = message.location
+    # При неточной геопозиции нельзя понять, офис это или поле: просим повторить, шаг не сбрасываем
+    if loc.horizontal_accuracy is not None and loc.horizontal_accuracy > settings.max_accuracy_m:
+        await message.answer(texts.low_accuracy_text(loc.horizontal_accuracy), reply_markup=keyboards.checkout_location())
+        return
     result = await att.check_out(
         session,
         settings,
@@ -175,7 +179,7 @@ async def checkin_location(
         await message.answer(text, reply_markup=menu)
         return
     if result.status == att.CheckInStatus.LOW_ACCURACY:
-        await message.answer(texts.LOW_ACCURACY, reply_markup=menu)
+        await message.answer(texts.low_accuracy_text(message.location.horizontal_accuracy), reply_markup=menu)
         return
     if result.status == att.CheckInStatus.OUTSIDE:
         await message.answer(texts.outside_zone(result.zone.distance_m), reply_markup=menu)
