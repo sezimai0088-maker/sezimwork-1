@@ -215,20 +215,23 @@ def test_full_day_with_tasks():
         assert "от офиса" in h.tg.texts(WORKER)[-1]
         assert not h.tg.sent(GROUP_ID)
 
-        # В офисе — приход, сообщение в чат, сразу просьба написать задачи
+        # В офисе — приход отмечен, но в чат пока ничего: бот сначала просит задачи
         await h.location(WORKER, OFFICE[0] + 0.0002, OFFICE[1])
-        group = h.tg.texts(GROUP_ID)
-        assert "Айбек Асанов</b> пришёл в офис" in group[-1]
+        assert not h.tg.sent(GROUP_ID)
         assert "каждую с новой строки" in h.tg.texts(WORKER)[-1]
 
-        # Пишет задачи списком и просто отправляет — без «Готово» и подтверждения
-        await h.text(WORKER, "1. Сдать отчёт\n2. Позвонить поставщику\n3. Проверить склад")
-        assert "Добавлено задач: 3" in h.tg.texts(WORKER)[-1]
-        # В общем чате — одно сообщение: приход и план
+        # Пишет задачи одним сообщением → бот показывает план с 🗑 и «Отправить план»
+        await h.text(WORKER, "1. Сдать отчёт\n2. Позвонить поставщику\n3. Проверить склад\n4. Лишняя задача")
+        assert "Ваш план на сегодня" in h.tg.texts(WORKER)[-1]
+        assert not h.tg.sent(GROUP_ID)
+        await h.press(WORKER, h.find_button(WORKER, "🗑 4."))
+        await h.press(WORKER, h.find_button(WORKER, "📤 Отправить план"))
+        # В общем чате — одно сообщение: приход и план, без сроков
         chat = h.tg.view(GROUP_ID)
         assert len(chat) == 1
         day_msg_id, day_msg = next(iter(chat.items()))
         assert "пришёл в офис" in day_msg and "План на день" in day_msg and "Позвонить поставщику" in day_msg
+        assert "Лишняя задача" not in day_msg and "срок" not in day_msg
 
         # Руководитель ставит задачу, сотрудник принимает
         await h.text(MANAGER, "📌 Поставить задачу")
@@ -276,6 +279,7 @@ def test_add_task_midday_and_my_tasks():
         await onboard(h)
         await h.location(WORKER, *OFFICE)
         await h.text(WORKER, "Первая задача")
+        await h.press(WORKER, h.find_button(WORKER, "📤 Отправить план"))
 
         await h.text(WORKER, "➕ Добавить задачу")
         await h.text(WORKER, "Вторая задача")
@@ -292,11 +296,19 @@ def test_add_task_midday_and_my_tasks():
         await h.press(WORKER, h.find_button(WORKER, "🗑 3."))
         assert "Третья задача" not in list(h.tg.view(GROUP_ID).values())[0]
 
+        # «Мои задачи»: только срок — сегодня или завтра, без «Начал»
         await h.text(WORKER, "📋 Мои задачи")
         assert "Вторая задача" in h.tg.texts(WORKER)[-1]
-        await h.press(WORKER, h.find_button(WORKER, "▶️ 1."))
+        buttons = [b.text for row in h.tg.last_inline(WORKER).inline_keyboard for b in row]
+        assert not any("Начал" in b for b in buttons)
+        await h.press(WORKER, h.find_button(WORKER, "📅 1."))
+        due_buttons = [b.text for row in h.tg.last_inline(WORKER).inline_keyboard for b in row]
+        assert due_buttons == ["Сегодня", "Завтра"]
+        await h.press(WORKER, h.find_button(WORKER, "Завтра"))
         edits = [c for c in h.tg.calls if isinstance(c, EditMessageText)]
-        assert "▶️ Первая задача" in edits[-1].text
+        assert "Первая задача (срок до" in edits[-1].text
+        # В общем чате срок не показывается
+        assert "срок" not in list(h.tg.view(GROUP_ID).values())[0]
 
     run(scenario)
 
@@ -355,7 +367,7 @@ def test_next_day_carry_over_and_alert_to_manager():
         await h.location(WORKER, *OFFICE)
         assert "Перенесены вчерашние" in h.tg.texts(WORKER)[-1]
         await h.press(WORKER, h.find_button(WORKER, "🗑 2. Убрать склад"))
-        await h.press(WORKER, h.find_button(WORKER, "✅ Новых задач нет"))
+        await h.press(WORKER, h.find_button(WORKER, "📤 Отправить план"))
         plan = list(h.tg.view(GROUP_ID).values())[-1]
         assert "Сдать отчёт по объекту" in plan and "Убрать склад" not in plan
 
@@ -400,6 +412,7 @@ def test_owner_can_reset_today_for_testing():
 
         # День проходится заново: приход и снова итог по той же задаче
         await h.location(OWNER, *OFFICE)
+        await h.press(OWNER, h.find_button(OWNER, "📤 Отправить план"))
         assert "пришёл в офис" in h.tg.texts(GROUP_ID)[-1]
         await h.text(OWNER, "🏁 Завершить день")
         assert "Задача 1 из 1" in h.tg.texts(OWNER)[-1]
@@ -455,8 +468,10 @@ def test_approximate_location_on_iphone_gets_clear_instructions():
 
         # Точная — приход засчитан
         await h.location(WORKER, *OFFICE, acc=12)
-        assert "пришёл в офис" in h.tg.texts(GROUP_ID)[-1]
+        assert "Приход отмечен" in h.tg.texts(WORKER)[-2]
         await h.text(WORKER, "Задача")
+        await h.press(WORKER, h.find_button(WORKER, "📤 Отправить план"))
+        assert "пришёл в офис" in h.tg.texts(GROUP_ID)[-1]
 
         # Уход с примерной геопозицией не превращается в «поле»: бот просит повторить
         await h.text(WORKER, "🏁 Завершить день")
@@ -477,15 +492,17 @@ def test_tasks_sent_one_by_one_and_after_restart():
     async def scenario(h: Harness):
         await onboard(h)
         await h.location(WORKER, *OFFICE)
-        # Человек пишет задачи по одной — каждая сразу в плане
+        # Человек пишет задачи по одной — все собираются в один план
         await h.text(WORKER, "Позвонить клиенту")
         await h.text(WORKER, "Купить краску")
-        msg = list(h.tg.view(GROUP_ID).values())
-        assert len(msg) == 1 and "Позвонить клиенту" in msg[0] and "Купить краску" in msg[0]
+        assert "Позвонить клиенту" in h.tg.texts(WORKER)[-1] and "Купить краску" in h.tg.texts(WORKER)[-1]
 
-        # Старая кнопка «Готово» на телефоне не ломает ничего
+        # Старая кнопка «Готово» на телефоне не ломает ничего — показывает план с «Отправить»
         await h.text(WORKER, "✅ Готово")
         assert "Ваш план на сегодня" in h.tg.texts(WORKER)[-1]
+        await h.press(WORKER, h.find_button(WORKER, "📤 Отправить план"))
+        msg = list(h.tg.view(GROUP_ID).values())
+        assert len(msg) == 1 and "Позвонить клиенту" in msg[0] and "Купить краску" in msg[0]
 
         # Бот перезапустили (шаг диалога забыт) — обычный текст всё равно становится задачей
         await h.dp.storage.close()
@@ -496,5 +513,40 @@ def test_tasks_sent_one_by_one_and_after_restart():
         # Кто ещё не пришёл — получает подсказку, а не задачу
         await h.text(MANAGER, "Какая-то задача")
         assert "Сначала отметьте приход" in h.tg.texts(MANAGER)[-1]
+
+    run(scenario)
+
+
+
+def test_manager_multiline_task_becomes_several_tasks():
+    async def scenario(h: Harness):
+        await onboard(h)
+        await h.location(WORKER, *OFFICE)
+        await h.press(WORKER, h.find_button(WORKER, "📤 Отправить план")) if h.tg.last_inline(WORKER) else None
+        await h.text(MANAGER, "📌 Поставить задачу")
+        await h.press(MANAGER, h.find_button(MANAGER, "Айбек"))
+        await h.text(MANAGER, "авпвап\nпапав")
+        await h.press(MANAGER, h.find_button(MANAGER, "Сегодня"))
+        got = [t for t in h.tg.texts(WORKER) if "Новая задача" in t]
+        assert len(got) == 2 and "авпвап" in got[0] and "папав" in got[1]
+
+    run(scenario)
+
+
+def test_plan_autosent_if_employee_forgets_button():
+    async def scenario(h: Harness):
+        from datetime import timedelta as td
+
+        from bot.db import make_sessionmaker as msm
+        from bot.scheduler import tick
+
+        await onboard(h)
+        await h.location(WORKER, *OFFICE)
+        await h.text(WORKER, "Забыл нажать отправить")
+        assert not h.tg.sent(GROUP_ID)
+        later = datetime.now(timezone.utc) + td(minutes=h.settings.plan_autosend_min + 1)
+        await tick(h.bot, msm(h.engine), h.settings, now=later)
+        chat = list(h.tg.view(GROUP_ID).values())
+        assert any("пришёл в офис" in m and "Забыл нажать отправить" in m for m in chat)
 
     run(scenario)

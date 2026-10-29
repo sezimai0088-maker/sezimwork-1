@@ -132,6 +132,9 @@ async def checkout_location(
     results = await task_svc.day_results(session, employee.id, today)
     group_text += texts.tasks_block_for_group([(r.task.text, r.status, r.reason, r.comment) for r in results])
 
+    # План так и не отправили — сначала публикуем приход и план, уход будет ответом на них
+    if result.attendance.group_message_id is None:
+        await day_message.refresh(bot, session, settings, employee, today)
     sent = await day_message.post_departure(bot, session, settings, result.attendance, group_text)
     await message.answer(
         texts.checked_out_private(at_local, worked, is_field),
@@ -187,11 +190,9 @@ async def checkin_location(
 
     day = result.attendance
     at_local = message.date.astimezone(settings.tz)
-    # Одно сообщение в общем чате: приход, а после задач — и план
-    sent = await day_message.refresh(bot, session, settings, employee, day.work_date)
+    # В общий чат пока ничего не отправляем: сначала сотрудник пишет план,
+    # затем «📤 Отправить план» — и уходит одно сообщение «приход + план».
     await message.answer(texts.checked_in_private(at_local, day.late_minutes), reply_markup=menu)
-    if not sent and employee.is_owner:
-        await message.answer(texts.GROUP_NOT_SET)
     # Сразу после прихода — план на день
     await start_planning(message, state, bot, session, settings, employee, day.work_date)
 

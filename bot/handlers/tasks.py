@@ -43,8 +43,12 @@ async def _safe_edit(message: Message, text: str, reply_markup=None) -> None:
 
 # ======================= План на день =======================
 #
-# Без кнопок «Готово» и «Всё верно»: каждое сообщение с задачами сразу сохраняется
-# и обновляет сообщение дня в общем чате. Лишнее убирается кнопкой 🗑.
+# Утро: «Я в офисе» → геолокация → бот просит задачи (в чат пока ничего не уходит)
+# → сотрудник пишет задачи одним сообщением → бот показывает план с 🗑 и кнопкой
+# «📤 Отправить план» → только тогда в общий чат уходит одно сообщение «приход + план».
+# Если сотрудник забыл нажать «Отправить», бот отправит сам через PLAN_AUTOSEND_MIN минут.
+# После отправки изменения плана (добавить, убрать, задача от руководителя) обновляют
+# то же сообщение в чате.
 
 
 async def _open_plan(session: AsyncSession, employee: Employee, today: date) -> list:
@@ -58,6 +62,24 @@ async def _day_open(session: AsyncSession, employee: Employee, today: date):
     """Сегодняшняя отметка, если день начат и ещё не завершён."""
     day = await att.get_day(session, employee.id, today)
     return day if day is not None and day.check_out_at is None else None
+
+
+def _sent(day) -> bool:  # noqa: ANN001
+    """План уже отправлен в общий чат."""
+    return day is not None and day.group_message_id is not None
+
+
+async def _show_plan(target: Message, session: AsyncSession, employee: Employee, today: date, *, edit: bool) -> None:
+    """Показывает сотруднику план: до отправки — с кнопкой «Отправить план», после — только 🗑."""
+    tasks = await _open_plan(session, employee, today)
+    day = await att.get_day(session, employee.id, today)
+    sent = _sent(day)
+    text = texts.plan_after_delete(tasks, today) if sent else texts.plan_preview(tasks, today)
+    markup = keyboards.plan_buttons(tasks, send_button=not sent)
+    if edit:
+        await _safe_edit(target, text, markup)
+    else:
+        await target.answer(text, reply_markup=markup)
 
 
 async def start_planning(
@@ -74,10 +96,12 @@ async def start_planning(
     await state.set_state(Plan.writing)
     if carry:
         await svc.keep_for_today(session, carry, {t.id for t in carry}, today)
-        await day_message.refresh(bot, session, settings, employee, today)
-        tasks = await _open_plan(session, employee, today)
+    # В плане уже могут быть задачи: перенесённые со вчера или поставленные руководителем заранее
+    tasks = await _open_plan(session, employee, today)
+    if tasks:
         await message.answer(
-            texts.carried_intro(tasks, today), reply_markup=keyboards.plan_buttons(tasks, no_new_button=True)
+            texts.carried_intro(tasks, today, carried=bool(carry)),
+            reply_markup=keyboards.plan_buttons(tasks, send_button=True),
         )
         return
     await message.answer(texts.ASK_NEW_TASKS)
@@ -87,10 +111,11 @@ async def _save_tasks(
     message: Message, bot: Bot, session: AsyncSession, settings: Settings, employee: Employee
 ) -> None:
     today = today_for(settings)
-    if await _day_open(session, employee, today) is None:
-        day = await att.get_day(session, employee.id, today)
+    day = await _day_open(session, employee, today)
+    if day is None:
+        closed = await att.get_day(session, employee.id, today)
         await message.answer(
-            texts.DAY_CLOSED_FOR_TASKS if day else texts.NEED_CHECK_IN_FOR_TASKS,
+            texts.DAY_CLOSED_FOR_TASKS if closed else texts.NEED_CHECK_IN_FOR_TASKS,
             reply_markup=await menu_for(session, settings, employee),
         )
         return
@@ -98,27 +123,21 @@ async def _save_tasks(
     if not lines:
         await message.answer(texts.NO_TASKS_IN_TEXT)
         return
-    added = await svc.add_tasks(session, employee, lines, today)
-    continued = sum(1 for a in added if a.continued)
-    await day_message.refresh(bot, session, settings, employee, today)
-    tasks = await _open_plan(session, employee, today)
-    await message.answer(
-        texts.plan_saved(tasks, today, len(added), continued), reply_markup=keyboards.plan_buttons(tasks)
-    )
+    await svc.add_tasks(session, employee, lines, today)
+    if _sent(day):
+        # План уже в чате — обновляем то же сообщение
+        await day_message.refresh(bot, session, settings, employee, today)
+    await _show_plan(message, session, employee, today, edit=False)
 
 
 @router.message(StateFilter(Plan.writing), F.text == texts.BTN_TASKS_DONE)
 async def old_done_button(
     message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
 ) -> None:
-    """Кнопка «Готово» из старой версии: задачи уже сохранены, просто возвращаем меню."""
-    await state.clear()
+    """Кнопка «Готово» из старой версии: показываем план с кнопкой «Отправить план»."""
     if employee is None:
         return
-    tasks = await _open_plan(session, employee, today_for(settings))
-    await message.answer(
-        texts.plan_after_delete(tasks, today_for(settings)), reply_markup=await menu_for(session, settings, employee)
-    )
+    await _show_plan(message, session, employee, today_for(settings), edit=False)
 
 
 @router.message(StateFilter(Plan.writing), F.text, ~F.text.in_(MENU_BUTTONS), ~F.text.startswith("/"))
@@ -130,17 +149,29 @@ async def writing_tasks(
     await _save_tasks(message, bot, session, settings, employee)
 
 
-@router.callback_query(PlanCb.filter(F.action == "none"))
-async def no_new_tasks(
-    callback: CallbackQuery, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
+@router.callback_query(PlanCb.filter(F.action.in_({"send", "none"})))
+async def plan_send(
+    callback: CallbackQuery,
+    state: FSMContext,
+    bot: Bot,
+    session: AsyncSession,
+    settings: Settings,
+    employee: Employee | None,
 ) -> None:
+    """«📤 Отправить план» — в общий чат уходит одно сообщение: приход и план."""
     if employee is None:
         return await callback.answer()
     today = today_for(settings)
+    day = await _day_open(session, employee, today)
+    if day is None:
+        return await callback.answer(texts.DAY_CLOSED_FOR_TASKS, show_alert=True)
+    sent = await day_message.refresh(bot, session, settings, employee, today)
     tasks = await _open_plan(session, employee, today)
-    await _safe_edit(callback.message, texts.plan_after_delete(tasks, today), keyboards.plan_buttons(tasks))
-    await callback.answer()
-    await callback.message.answer(texts.NO_NEW_TASKS_OK, reply_markup=await menu_for(session, settings, employee))
+    await _safe_edit(callback.message, texts.plan_sent(tasks, today), keyboards.plan_buttons(tasks))
+    await callback.answer("Отправлено" if sent else "")
+    await callback.message.answer(texts.PLAN_SENT_OK, reply_markup=await menu_for(session, settings, employee))
+    if not sent and employee.is_owner:
+        await callback.message.answer(texts.GROUP_NOT_SET)
 
 
 @router.callback_query(PlanCb.filter(F.action == "del"))
@@ -155,22 +186,15 @@ async def plan_delete(
     if employee is None:
         return await callback.answer()
     today = today_for(settings)
-    if await _day_open(session, employee, today) is None:
+    day = await _day_open(session, employee, today)
+    if day is None:
         return await callback.answer(texts.DAY_CLOSED_FOR_TASKS, show_alert=True)
     task = await svc.get_task(session, callback_data.task_id)
     if task is None or task.employee_id != employee.id or not await svc.remove_from_today(session, task):
         return await callback.answer("Эту задачу убрать нельзя")
-    await day_message.refresh(bot, session, settings, employee, today)
-    tasks = await _open_plan(session, employee, today)
-    # Утреннее сообщение с перенесёнными задачами остаётся приглашением написать новые
-    none_cb = PlanCb(action="none").pack()
-    markup = callback.message.reply_markup
-    morning = markup is not None and any(b.callback_data == none_cb for row in markup.inline_keyboard for b in row)
-    if morning:
-        text = texts.carried_intro(tasks, today) if tasks else texts.ASK_NEW_TASKS
-    else:
-        text = texts.plan_after_delete(tasks, today)
-    await _safe_edit(callback.message, text, keyboards.plan_buttons(tasks, no_new_button=morning and bool(tasks)))
+    if _sent(day):
+        await day_message.refresh(bot, session, settings, employee, today)
+    await _show_plan(callback.message, session, employee, today, edit=True)
     await callback.answer("Убрано")
 
 
@@ -223,10 +247,7 @@ async def task_action(
         return await callback.answer("Задача не найдена")
     today = today_for(settings)
 
-    if callback_data.action == "start":
-        await svc.mark_started(session, task)
-        await callback.answer("Отмечено: в работе")
-    elif callback_data.action == "due":
+    if callback_data.action == "due":
         await callback.message.edit_reply_markup(reply_markup=keyboards.due_choice(task.id, today))
         return await callback.answer("Выберите срок")
     elif callback_data.action == "setdue":
@@ -470,23 +491,25 @@ async def assign_due(
     target = await session.get(Employee, data["assign_to"])
     today = today_for(settings)
     due = due_options(today).get(callback_data.value, today)
-    added = await svc.add_tasks(session, target, [data["assign_text"]], today, author=employee, due_date=due)
-    task = added[0].task
+    lines = parse_task_lines(data["assign_text"]) or [data["assign_text"]]
+    added = await svc.add_tasks(session, target, lines, today, author=employee, due_date=due)
     await state.clear()
-    if await _day_open(session, target, today) is not None:
+    if _sent(await _day_open(session, target, today)):
         await day_message.refresh(bot, session, settings, target, today)
     await _safe_edit(callback.message, f"{texts.ASSIGN_DUE} {keyboards.DUE_LABELS.get(callback_data.value, '')}")
     await callback.answer()
 
     if target.telegram_id:
-        try:
-            await bot.send_message(
-                target.telegram_id,
-                texts.new_task_from_manager(employee.full_name, task.text, task.due_date, today),
-                reply_markup=keyboards.accept_task(task.id),
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # Каждая строка — отдельная задача со своей кнопкой «Принял»
+        for item in added:
+            try:
+                await bot.send_message(
+                    target.telegram_id,
+                    texts.new_task_from_manager(employee.full_name, item.task.text, item.task.due_date, today),
+                    reply_markup=keyboards.accept_task(item.task.id),
+                )
+            except Exception:  # noqa: BLE001
+                pass
     await callback.message.answer(texts.ASSIGN_DONE, reply_markup=await menu_for(session, settings, employee))
 
 

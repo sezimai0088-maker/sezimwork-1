@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     morning_summary_min: int = 30               # через сколько минут после начала — «ещё не отметились» в чат
     checkout_reminder_min: int = 30             # через сколько минут после конца напомнить завершить день
     backup_time: time = time(3, 0)              # ночной бэкап базы владельцу
+    plan_autosend_min: int = 15                 # если план не отправили — бот отправит приход сам через N минут
 
     twogis_base_url: str = "https://2gis.kg"
     database_url: str = "sqlite+aiosqlite:///data/bot.db"

@@ -58,15 +58,15 @@ def main_menu(employee: Employee, *, checked_in: bool, checked_out: bool) -> Rep
 # ---------- План на день ----------
 
 
-def plan_buttons(tasks: list[Task], *, no_new_button: bool = False) -> InlineKeyboardMarkup | None:
-    """🗑 под каждой задачей, которую сотрудник может убрать, и (утром) «Новых задач нет»."""
+def plan_buttons(tasks: list[Task], *, send_button: bool = False) -> InlineKeyboardMarkup | None:
+    """🗑 под каждой задачей, которую сотрудник может убрать, и (пока план не отправлен) «Отправить план»."""
     rows = []
     for i, task in enumerate(tasks, 1):
         if task.from_manager:
             continue
         rows.append([_btn(f"🗑 {i}. {task.text}"[:60], PlanCb(action="del", task_id=task.id))])
-    if no_new_button:
-        rows.append([_btn(texts.BTN_NO_NEW_TASKS, PlanCb(action="none"))])
+    if send_button:
+        rows.append([_btn(texts.BTN_SEND_PLAN, PlanCb(action="send"))])
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
@@ -74,15 +74,12 @@ def plan_buttons(tasks: list[Task], *, no_new_button: bool = False) -> InlineKey
 
 
 def my_tasks(tasks: list[Task]) -> InlineKeyboardMarkup | None:
+    """Под каждой открытой задачей — только смена срока: сегодня или завтра."""
     rows = []
     for i, task in enumerate(tasks, 1):
         if task.status not in (TaskStatus.NEW, TaskStatus.IN_PROGRESS):
             continue
-        row = []
-        if task.status == TaskStatus.NEW:
-            row.append(_btn(f"▶️ {i}. Начал", TaskCb(action="start", task_id=task.id)))
-        row.append(_btn(f"📅 {i}. Срок", TaskCb(action="due", task_id=task.id)))
-        rows.append(row)
+        rows.append([_btn(f"📅 {i}. {task.text}"[:60], TaskCb(action="due", task_id=task.id))])
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
@@ -90,8 +87,9 @@ DUE_LABELS = {"today": "Сегодня", "tomorrow": "Завтра", "week": "Д
 
 
 def due_choice(task_id: int, today: date) -> InlineKeyboardMarkup:
+    """Срок задачи: только сегодня или завтра."""
     buttons = [
-        _btn(DUE_LABELS[key], TaskCb(action="setdue", task_id=task_id, value=key)) for key in due_options(today)
+        _btn(DUE_LABELS[key], TaskCb(action="setdue", task_id=task_id, value=key)) for key in ("today", "tomorrow")
     ]
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
 

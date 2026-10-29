@@ -223,7 +223,30 @@ def make_backup(source: Path, target: Path) -> None:
         src.close()
 
 
-JOBS = (job_reminders, job_morning_summary, job_daily_report, job_period_reports, job_repeat_alerts, job_backup)
+async def job_autosend_plans(bot: Bot, session: AsyncSession, settings: Settings, clock: Clock) -> None:
+    """Сотрудник отметился, но не нажал «Отправить план» — отправляем приход и план сами."""
+    from bot.services import day_message
+    from bot.services.notify import group_chat
+
+    if await group_chat(session, settings) is None:
+        return
+    deadline = (clock.now - timedelta(minutes=settings.plan_autosend_min)).astimezone(timezone.utc)
+    pending = list(
+        await session.scalars(
+            select(Attendance).where(
+                Attendance.work_date == clock.today,
+                Attendance.group_message_id.is_(None),
+                Attendance.check_in_at <= deadline,
+            )
+        )
+    )
+    for att in pending:
+        employee = await session.get(Employee, att.employee_id)
+        if employee is not None:
+            await day_message.refresh(bot, session, settings, employee, clock.today)
+
+
+JOBS = (job_autosend_plans, job_reminders, job_morning_summary, job_daily_report, job_period_reports, job_repeat_alerts, job_backup)
 
 
 async def tick(bot: Bot, sessionmaker: async_sessionmaker[AsyncSession], settings: Settings, now: datetime | None = None) -> None:

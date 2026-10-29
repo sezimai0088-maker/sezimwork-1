@@ -96,10 +96,7 @@ def already_checked_in(at_local: datetime) -> str:
 
 def checked_in_private(at_local: datetime, late: int) -> str:
     late_line = f"Опоздание: {format_duration(late)}." if late else "Вовремя 👍"
-    return (
-        f"✅ Приход отмечен: {hhmm(at_local)}. {late_line}\n\n"
-        f"Хорошего дня! Вечером нажмите «{BTN_FINISH_DAY}»."
-    )
+    return f"✅ Приход отмечен: {hhmm(at_local)}. {late_line}"
 
 
 def checked_in_group(name: str, at_local: datetime, late: int, workday: bool) -> str:
@@ -222,30 +219,39 @@ ASK_NEW_TASKS = (
     "<i>Сдать отчёт по объекту\n"
     "Позвонить поставщику\n"
     "Проверить склад</i>\n\n"
-    "Отправьте сообщение — и план сразу уйдёт в общий чат."
+    "Потом проверьте план и нажмите «📤 Отправить план»."
 )
 ASK_ADD_TASKS = "📝 Напишите задачи, которые нужно добавить, — каждую с новой строки. Отправьте — и они сразу добавятся в план."
 NO_TASKS_IN_TEXT = "Не нашёл задач в сообщении. Напишите каждую задачу с новой строки."
 PLAN_EMPTY = "В плане на сегодня нет задач. Чтобы добавить — нажмите «➕ Добавить задачу» или просто напишите задачу сюда."
-NO_NEW_TASKS_OK = "👍 Хорошо, работаем по перенесённым задачам. Хорошего дня!"
 NEED_CHECK_IN_FOR_TASKS = f"Сначала отметьте приход кнопкой «{BTN_CHECK_IN}», потом можно будет написать задачи."
 DAY_CLOSED_FOR_TASKS = "Рабочий день уже завершён — задачи можно будет написать завтра после прихода."
-BTN_NO_NEW_TASKS = "✅ Новых задач нет"
+BTN_SEND_PLAN = "📤 Отправить план"
+PLAN_SENT_OK = "✅ План отправлен в общий чат. Хорошего дня!"
 
 
-def carried_intro(tasks, today) -> str:
-    lines = ["🔁 <b>Перенесены вчерашние незакрытые задачи:</b>"]
+def carried_intro(tasks, today, *, carried: bool = True) -> str:
+    head = "🔁 <b>Перенесены вчерашние незакрытые задачи:</b>" if carried else "📋 <b>Уже в плане на сегодня:</b>"
+    lines = [head]
     lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
-    lines.append("\nЛишнюю можно убрать кнопкой 🗑 ниже.\n")
+    lines.append("\nЛишнюю уберите кнопкой 🗑. Если новых задач нет — сразу нажмите «📤 Отправить план».\n")
     return "\n".join(lines) + "\n" + ASK_NEW_TASKS
 
 
-def plan_saved(tasks, today, added: int, continued: int) -> str:
-    head = f"✅ Добавлено задач: {added}. План отправлен в общий чат."
-    if continued:
-        head += f"\n🔁 {continued} из них — продолжение незакрытых задач прошлых дней."
-    lines = [head, "", "<b>Ваш план на сегодня:</b>"]
+def plan_preview(tasks, today) -> str:
+    """План до отправки в общий чат."""
+    if not tasks:
+        return ASK_NEW_TASKS
+    lines = ["📋 <b>Ваш план на сегодня:</b>"]
     lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)]
+    lines.append("\nЛишнее уберите кнопкой 🗑, забытое — допишите сообщением.")
+    lines.append("Всё верно — нажмите <b>«📤 Отправить план»</b>.")
+    return "\n".join(lines)
+
+
+def plan_sent(tasks, today) -> str:
+    lines = ["✅ <b>План отправлен в общий чат:</b>"]
+    lines += [f"{i}. {task_line(t, today)}" for i, t in enumerate(tasks, 1)] or ["(без задач)"]
     lines.append("\nЗабыли задачу — просто напишите её сюда.")
     return "\n".join(lines)
 
@@ -265,10 +271,12 @@ def due_suffix(due, today) -> str:
     return f" (срок до {due:%d.%m})"
 
 
-def task_line(task, today, *, with_status: bool = False) -> str:
+def task_line(task, today, *, with_status: bool = False, show_due: bool = False) -> str:
+    """Строка задачи. Срок показываем только в «Мои задачи» — в плане на день он не нужен."""
     icon = STATUS_ICON.get(task.status, "▫️") + " " if with_status else ""
     manager = " 👤" if task.from_manager else ""
-    return f"{icon}{escape(task.text)}{manager}{due_suffix(task.due_date, today)}"
+    due = due_suffix(task.due_date, today) if show_due else ""
+    return f"{icon}{escape(task.text)}{manager}{due}"
 
 
 def plan_text(tasks, today, *, title: str = "Ваш план на сегодня") -> str:
@@ -283,8 +291,8 @@ def my_tasks_text(tasks, today) -> str:
     if not tasks:
         return PLAN_EMPTY
     lines = ["<b>Задачи на сегодня:</b>"]
-    lines += [f"{i}. {task_line(t, today, with_status=True)}" for i, t in enumerate(tasks, 1)]
-    lines.append("\n▶️ — отметить, что начали. 📅 — изменить срок.")
+    lines += [f"{i}. {task_line(t, today, with_status=True, show_due=True)}" for i, t in enumerate(tasks, 1)]
+    lines.append("\n📅 — нажмите на задачу, чтобы перенести срок на завтра или вернуть на сегодня.")
     return "\n".join(lines)
 
 
