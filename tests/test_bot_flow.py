@@ -550,3 +550,20 @@ def test_plan_autosent_if_employee_forgets_button():
         assert any("пришёл в офис" in m and "Забыл нажать отправить" in m for m in chat)
 
     run(scenario)
+
+
+def test_re_adding_former_owner_as_employee_keeps_employee_role():
+    async def scenario(h: Harness):
+        await onboard(h)
+        await h.text(OWNER, "/add_owner +996501720170 Мырзахмед")
+        await h.text(OWNER, "/remove +996501720170")
+        await h.text(OWNER, "/add +996501720170 Мырзахмед")
+        assert "— сотрудник" in h.tg.texts(OWNER)[-1]
+        # Повышение и понижение работают явно
+        await h.text(OWNER, "/add_manager +996501720170 Мырзахмед")
+        assert "— руководитель" in h.tg.texts(OWNER)[-1]
+        # Себя понизить нельзя
+        await h.text(OWNER, "/add +996700000100 Я")
+        assert "Себя понизить нельзя" in h.tg.texts(OWNER)[-1]
+
+    run(scenario)

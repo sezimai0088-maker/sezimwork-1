@@ -80,9 +80,18 @@ async def register_by_contact(
 
 
 async def add_employee(
-    session: AsyncSession, *, phone: str, full_name: str, role: Role = Role.EMPLOYEE
+    session: AsyncSession,
+    *,
+    phone: str,
+    full_name: str,
+    role: Role = Role.EMPLOYEE,
+    actor: Employee | None = None,
 ) -> tuple[Employee, bool]:
-    """Добавляет сотрудника или обновляет имя и роль существующего. Возвращает (сотрудник, создан_ли)."""
+    """Добавляет сотрудника или обновляет имя и роль существующего. Возвращает (сотрудник, создан_ли).
+
+    Роль всегда ставится та, что указана в команде: /add — сотрудник, /add_manager — руководитель,
+    /add_owner — владелец. Себя понизить нельзя, последнего владельца — тоже.
+    """
     phone = normalize_phone(phone)
     employee = await get_by_phone(session, phone)
     created = employee is None
@@ -90,9 +99,13 @@ async def add_employee(
         employee = Employee(phone=phone, full_name=full_name, role=role)
         session.add(employee)
     else:
+        if employee.role == Role.OWNER and role != Role.OWNER:
+            if actor is not None and actor.id == employee.id:
+                raise RemoveError("Себя понизить нельзя.")
+            if employee.is_active and await count_owners(session) <= 1:
+                raise RemoveError("Нельзя понизить последнего владельца.")
         employee.full_name = full_name
-        if employee.role != Role.OWNER:
-            employee.role = role
+        employee.role = role
         employee.is_active = True
     await session.commit()
     return employee, created

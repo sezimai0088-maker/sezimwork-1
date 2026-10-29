@@ -60,10 +60,11 @@ async def cmd_add(message: Message, command: CommandObject, session: AsyncSessio
         return
     phone, name = parsed
     role = COMMAND_ROLES[command.command]
-    new, created = await emp.add_employee(session, phone=phone, full_name=name, role=role)
-    if role == Role.OWNER and new.role != Role.OWNER:
-        new.role = Role.OWNER
-        await session.commit()
+    try:
+        new, created = await emp.add_employee(session, phone=phone, full_name=name, role=role, actor=employee)
+    except emp.RemoveError as error:
+        await message.answer(f"⚠️ {error}")
+        return
     action = "Добавлен" if created else "Обновлён"
     await message.answer(
         f"✅ {action}: <b>{escape(new.full_name)}</b>, {format_phone(new.phone)} — {ROLE_NAMES[Role(new.role)]}.\n\n"
