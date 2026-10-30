@@ -20,11 +20,27 @@ def normalize_database_url(url: str) -> str:
         if url.startswith(prefix):
             url = "postgresql+asyncpg://" + url[len(prefix):]
             break
+    if url.startswith("postgresql+asyncpg://"):
+        url = _quote_password(url)
     if url.startswith("postgresql+asyncpg://") and "?" in url:
         base, query = url.split("?", 1)
         params = [p for p in query.split("&") if p and not p.startswith("sslmode=")]
         url = base + ("?" + "&".join(params) if params else "")
     return url
+
+
+def _quote_password(url: str) -> str:
+    """Пароль с символами @ # / ? : % ломает адрес — кодируем его, чтобы сервер базы прочитался верно."""
+    from urllib.parse import quote, unquote
+
+    scheme, rest = url.split("://", 1)
+    if "@" not in rest:
+        return url
+    creds, hostpart = rest.rsplit("@", 1)  # в адресе сервера «@» не бывает — берём последнюю
+    if ":" not in creds:
+        return url
+    user, password = creds.split(":", 1)
+    return f"{scheme}://{user}:{quote(unquote(password), safe='')}@{hostpart}"
 
 
 def describe_database_url(url: str) -> str:
@@ -49,6 +65,8 @@ def database_hint(url: str, exc: BaseException) -> str:
         return "В DATABASE_URL остались [YOUR-PASSWORD] или квадратные скобки — вставьте вместо них пароль."
     if raw[:1] in "\"'" or raw[-1:] in "\"'":
         return "Уберите кавычки вокруг DATABASE_URL."
+    if "127.0.0.1" in msg or "'::1'" in msg or "localhost" in msg:
+        return "В DATABASE_URL не найден адрес сервера. Скопируйте строку Session pooler заново целиком и вставьте пароль."
     if "password authentication failed" in msg or "invalidpassword" in msg:
         return "Неверный пароль базы. В Supabase: Project Settings → Database → Reset database password, затем обновите DATABASE_URL."
     if "tenant or user not found" in msg:

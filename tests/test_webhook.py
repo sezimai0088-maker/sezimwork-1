@@ -136,3 +136,14 @@ def test_database_hints_hide_password():
     assert "Session pooler" in database_hint("postgresql://postgres:p@db.abc.supabase.co:5432/postgres",
                                              OSError("[Errno 101] Network is unreachable"))
     assert "пароль" in database_hint(url, Exception("password authentication failed for user"))
+
+
+def test_password_with_special_characters():
+    from sqlalchemy.engine import make_url
+
+    url = "postgresql://postgres.abc:p@ss#w/rd?1@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
+    u = make_url(normalize_database_url(url))
+    assert u.host == "aws-0-eu-central-1.pooler.supabase.com" and u.port == 5432
+    assert u.username == "postgres.abc" and u.password == "p@ss#w/rd?1" and u.database == "postgres"
+    # обычный пароль не меняется
+    assert normalize_database_url("postgresql://u:abc123@h:5432/db") == "postgresql+asyncpg://u:abc123@h:5432/db"
