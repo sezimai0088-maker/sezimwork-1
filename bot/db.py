@@ -27,6 +27,39 @@ def normalize_database_url(url: str) -> str:
     return url
 
 
+def describe_database_url(url: str) -> str:
+    """Адрес базы для журнала — без пароля."""
+    from sqlalchemy.engine import make_url
+
+    try:
+        u = make_url(normalize_database_url(url))
+    except Exception:  # noqa: BLE001
+        return "(адрес базы не читается — проверьте DATABASE_URL)"
+    if u.drivername.startswith("sqlite"):
+        return f"SQLite: {u.database}"
+    pw = "задан" if u.password else "НЕ задан"
+    return f"сервер {u.host}, порт {u.port}, пользователь {u.username}, база {u.database}, пароль {pw}"
+
+
+def database_hint(url: str, exc: BaseException) -> str:
+    """Понятная подсказка по частым ошибкам подключения к Supabase."""
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    raw = url.strip()
+    if "[" in raw or "your-password" in raw.lower():
+        return "В DATABASE_URL остались [YOUR-PASSWORD] или квадратные скобки — вставьте вместо них пароль."
+    if raw[:1] in "\"'" or raw[-1:] in "\"'":
+        return "Уберите кавычки вокруг DATABASE_URL."
+    if "password authentication failed" in msg or "invalidpassword" in msg:
+        return "Неверный пароль базы. В Supabase: Project Settings → Database → Reset database password, затем обновите DATABASE_URL."
+    if "tenant or user not found" in msg:
+        return "Неверный пользователь: для pooler он должен быть вида postgres.xxxxxxxx (с точкой). Скопируйте строку Session pooler заново."
+    if "network is unreachable" in msg or "errno 101" in msg or "name or service not known" in msg or "gaierror" in msg:
+        return "Сервер базы недоступен. Скорее всего взята строка Direct connection — нужна строка Session pooler (в адресе есть слово pooler)."
+    if "timeout" in msg:
+        return "База не ответила. Проверьте, что проект Supabase активен (не на паузе), и что строка — Session pooler."
+    return "Проверьте DATABASE_URL: строка Session pooler из Supabase, пароль вставлен, без пробелов и кавычек."
+
+
 def is_postgres(url: str) -> bool:
     return normalize_database_url(url).startswith("postgresql+asyncpg://")
 

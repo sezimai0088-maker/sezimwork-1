@@ -124,3 +124,15 @@ def test_json_backup_roundtrip(tmp_path):
         await dst.dispose()
 
     asyncio.run(scenario())
+
+
+def test_database_hints_hide_password():
+    from bot.db import database_hint, describe_database_url
+
+    url = "postgresql://postgres.abc:secret@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
+    d = describe_database_url(url)
+    assert "secret" not in d and "pooler.supabase.com" in d and "пароль задан" in d
+    assert "YOUR-PASSWORD" in database_hint("postgresql://postgres.abc:[YOUR-PASSWORD]@h:5432/postgres", OSError("x"))
+    assert "Session pooler" in database_hint("postgresql://postgres:p@db.abc.supabase.co:5432/postgres",
+                                             OSError("[Errno 101] Network is unreachable"))
+    assert "пароль" in database_hint(url, Exception("password authentication failed for user"))

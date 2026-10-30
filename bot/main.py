@@ -21,7 +21,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 from bot.config import Settings
-from bot.db import init_db, make_engine, make_sessionmaker
+from bot.db import database_hint, describe_database_url, init_db, make_engine, make_sessionmaker
 from bot.handlers import build_router
 from bot.middlewares import DbSessionMiddleware
 from bot.scheduler import run_scheduler
@@ -64,7 +64,14 @@ async def main() -> None:
     settings = Settings()
 
     engine = make_engine(settings.database_url)
-    await init_db(engine)
+    log.info("База данных: %s", describe_database_url(settings.database_url))
+    try:
+        await init_db(engine)
+    except Exception as exc:
+        log.error("НЕ УДАЛОСЬ ПОДКЛЮЧИТЬСЯ К БАЗЕ: %s: %s", type(exc).__name__, str(exc)[:300])
+        log.error("ПОДСКАЗКА: %s", database_hint(settings.database_url, exc))
+        await engine.dispose()
+        raise SystemExit(1) from None
     sessionmaker = make_sessionmaker(engine)
 
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
