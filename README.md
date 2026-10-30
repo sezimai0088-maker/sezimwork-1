@@ -103,9 +103,61 @@ python -m bot.main
 | Исправления | Руководитель меняет время прихода/ухода только с причиной; опоздание и часы пересчитываются; запись попадает в журнал |
 | Расписание | Время отчётов, напоминаний и бэкапа — в `.env` (`DAILY_REPORT_TIME`, `WEEKLY_REPORT_TIME`, `CHECKIN_REMINDER_MIN`, `MORNING_SUMMARY_MIN`, `CHECKOUT_REMINDER_MIN`, `BACKUP_TIME`) |
 
-## 6. Запуск на бесплатном сервере Google Cloud (работает круглосуточно)
+## 6. Бесплатный сервер: Render + Supabase (работает круглосуточно, без карты)
 
-### 6.1. Создать сервер (один раз, ≈10 минут)
+Как это устроено: **Render** запускает бота, **Supabase** хранит базу (отметки, задачи, сотрудники),
+**cron-job.org** каждые 10 минут «будит» Render, чтобы он не засыпал. Всё бесплатно.
+
+### 6.1. База в Supabase (≈5 минут)
+1. https://supabase.com → **New project**: имя `attendance-bot`, нажмите **Generate a password** и сохраните пароль у себя, регион **Central EU (Frankfurt)** → **Create new project**.
+2. Когда проект создастся: кнопка **Connect** вверху → вкладка **Connection string** → раздел **Session pooler** → скопируйте строку вида
+   `postgresql://postgres.xxxx:[YOUR-PASSWORD]@aws-0-eu-central-1.pooler.supabase.com:5432/postgres`
+3. Замените `[YOUR-PASSWORD]` на свой пароль (скобки тоже убрать). **Эту строку никому не отправляйте** — в ней пароль к базе.
+
+### 6.2. Бот на Render (≈10 минут)
+1. **Остановите бота на ноутбуке** (`Ctrl + C`) — один бот не может работать в двух местах сразу.
+2. https://dashboard.render.com → **Add new → Web Service** → **Public Git Repository** →
+   `https://github.com/sezimai0088-maker/sezimwork-1` → **Connect**.
+3. Настройки:
+   - Name: `nookat-bot` (адрес будет `https://nookat-bot.onrender.com`)
+   - Region: **Frankfurt (EU Central)**
+   - Language / Runtime: **Docker**, Branch: `main`
+   - Instance Type: **Free**
+4. **Environment Variables** — добавьте по одной (Add Environment Variable):
+
+   | Name | Value |
+   | --- | --- |
+   | `BOT_TOKEN` | токен от @BotFather |
+   | `OWNER_PHONE` | ваш номер, например `+996555123456` (несколько — через запятую) |
+   | `DATABASE_URL` | строка из Supabase с паролем (п. 6.1) |
+   | `OFFICE_LAT` | широта офиса, например `42.866468` |
+   | `OFFICE_LON` | долгота офиса, например `74.499384` |
+   | `WORK_START` | `09:00` |
+   | `WORK_END` | `18:00` |
+
+   Остальное (`OFFICE_RADIUS_M`, `ALERT_DAYS`, время отчётов) можно не задавать — будут значения по умолчанию, как в `.env.example`.
+5. **Advanced → Health Check Path**: `/health`.
+6. **Deploy Web Service**. Через 3–5 минут в журнале (Logs) появится строка `Бот запущен (webhook)` — бот работает.
+
+### 6.3. Чтобы бот не засыпал — cron-job.org
+1. https://console.cron-job.org/signup → зарегистрируйтесь, подтвердите почту.
+2. **Create cronjob**: Title `nookat-bot`, URL `https://nookat-bot.onrender.com/health`, Execution schedule — **Every 10 minutes** → **Create**.
+3. Через 10 минут в истории задания должно быть `200 OK`.
+
+### 6.4. После переноса
+- База новая и пустая: в Telegram снова нажмите **/start** (вы станете владельцем), в рабочей группе — **/bind_chat**, затем добавьте сотрудников через `/add`.
+- Каждую ночь в 03:00 владельцу приходит файл `backup_ГГГГ-ММ-ДД.json.gz` — храните его.
+- Восстановить из такого файла в новую пустую базу (на компьютере, в папке бота с активным `.venv`):
+  `python -m bot.backup restore backup_ГГГГ-ММ-ДД.json.gz --db "строка_из_Supabase"`
+- Обновление: после `git push` в `main` Render сам пересобирает и перезапускает бота (≈3 минуты).
+- Изменить настройки: Render → сервис → **Environment** → поменять значение → **Save Changes** (бот перезапустится).
+- Если снова запустить бота на ноутбуке, он заберёт бота себе. Чтобы вернуть на Render: остановите ноутбук и нажмите в Render **Manual Deploy → Restart service**.
+
+## 6Б. Альтернатива: свой сервер (Google Cloud и др.)
+
+Нужна банковская карта; Google может попросить предоплату.
+
+### Создать сервер (один раз, ≈10 минут)
 1. Откройте https://console.cloud.google.com, войдите через Google и добавьте банковскую карту — она нужна только для проверки, в пределах бесплатного лимита деньги не списываются.
 2. **Compute Engine → VM instances → Create instance**:
    - Name: `attendance-bot`
@@ -114,7 +166,7 @@ python -m bot.main
    - Boot disk: **Change → Ubuntu 24.04 LTS**, тип **Standard persistent disk**, 10–30 ГБ
 3. **Create**, подождите минуту.
 
-### 6.2. Установить бота одной командой
+### Установить бота одной командой
 1. **Сначала остановите бота на ноутбуке** (`Ctrl + C`) — один и тот же бот не может работать в двух местах сразу.
 2. В списке серверов нажмите **SSH** напротив `attendance-bot` — откроется консоль в браузере.
 3. Вставьте команду (правой кнопкой мыши или `Ctrl + Shift + V`) и нажмите Enter:
@@ -124,7 +176,7 @@ python -m bot.main
 4. Скрипт сам установит всё нужное и задаст вопросы: токен бота, ваш номер, координаты офиса, время работы.
 5. В конце появится «Готово! Бот работает круглосуточно».
 
-### 6.3. Полезные команды на сервере
+### Полезные команды на сервере
 | Что | Команда |
 | --- | --- |
 | Посмотреть журнал бота | `cd ~/sezimwork-1 && sudo docker compose logs -f --tail 50` (выйти — `Ctrl + C`) |

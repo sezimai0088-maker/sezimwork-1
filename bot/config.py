@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     twogis_base_url: str = "https://2gis.kg"
     database_url: str = "sqlite+aiosqlite:///data/bot.db"
 
+    # Режим webhook для хостингов вроде Render. Пусто — бот работает как раньше (сам забирает сообщения).
+    # На Render адрес подставляется автоматически из RENDER_EXTERNAL_URL.
+    webhook_base_url: str = ""
+    render_external_url: str = ""
+    webhook_secret: str = ""
+    port: int = 8080
+
+    @property
+    def public_url(self) -> str:
+        return (self.webhook_base_url or self.render_external_url).rstrip("/")
+
     @field_validator("group_chat_id", mode="before")
     @classmethod
     def _empty_to_none(cls, value: object) -> object:

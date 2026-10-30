@@ -180,11 +180,14 @@ async def job_repeat_alerts(bot: Bot, session: AsyncSession, settings: Settings,
 
 
 async def job_backup(bot: Bot, session: AsyncSession, settings: Settings, clock: Clock) -> None:
-    """Ночной бэкап: копия файла базы владельцу в личный чат."""
+    """Ночной бэкап владельцу в личный чат: файл базы (SQLite) или JSON-выгрузка (PostgreSQL/Supabase)."""
+    from bot.db import is_postgres
+
     if not clock.due(settings.backup_time) or not await _once_per_day(session, "job:backup", clock.today):
         return
+    postgres = is_postgres(settings.database_url)
     db_path = sqlite_path(settings.database_url)
-    if db_path is None or not db_path.exists():
+    if not postgres and (db_path is None or not db_path.exists()):
         return
     owners = list(
         await session.scalars(
@@ -194,8 +197,14 @@ async def job_backup(bot: Bot, session: AsyncSession, settings: Settings, clock:
     if not owners:
         return
     with tempfile.TemporaryDirectory() as tmp:
-        copy = Path(tmp) / f"backup_{clock.today:%Y-%m-%d}.db"
-        make_backup(db_path, copy)
+        if postgres:
+            from bot.backup import write_backup
+
+            copy = Path(tmp) / f"backup_{clock.today:%Y-%m-%d}.json.gz"
+            await write_backup(session.bind, copy)
+        else:
+            copy = Path(tmp) / f"backup_{clock.today:%Y-%m-%d}.db"
+            make_backup(db_path, copy)
         for owner in owners:
             try:
                 await bot.send_document(

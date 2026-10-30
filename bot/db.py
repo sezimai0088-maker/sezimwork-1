@@ -10,11 +10,49 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from bot.models import Base
 
 
+def normalize_database_url(url: str) -> str:
+    """Адрес из Supabase/Neon/Render ('postgresql://...' или 'postgres://...') → 'postgresql+asyncpg://...'.
+
+    Параметр sslmode из адреса убираем: asyncpg его не понимает, SSL включается отдельно.
+    """
+    url = url.strip()
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            url = "postgresql+asyncpg://" + url[len(prefix):]
+            break
+    if url.startswith("postgresql+asyncpg://") and "?" in url:
+        base, query = url.split("?", 1)
+        params = [p for p in query.split("&") if p and not p.startswith("sslmode=")]
+        url = base + ("?" + "&".join(params) if params else "")
+    return url
+
+
+def is_postgres(url: str) -> bool:
+    return normalize_database_url(url).startswith("postgresql+asyncpg://")
+
+
 def make_engine(database_url: str) -> AsyncEngine:
+    database_url = normalize_database_url(database_url)
     if database_url.startswith("sqlite") and ":///" in database_url:
         db_path = database_url.split(":///", 1)[1]
         if db_path and db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    if is_postgres(database_url):
+        local = "@localhost" in database_url or "@127.0.0.1" in database_url
+        engine = create_async_engine(
+            database_url,
+            pool_pre_ping=True,      # облачная база может закрыть простаивающее соединение
+            pool_recycle=300,
+            pool_size=3,
+            max_overflow=2,
+            connect_args={
+                # Облачные базы требуют шифрование; через пулер (pgbouncer) не кешируем запросы
+                "ssl": None if local else "require",
+                "statement_cache_size": 0,
+            },
+        )
+        return engine
 
     engine = create_async_engine(database_url)
 

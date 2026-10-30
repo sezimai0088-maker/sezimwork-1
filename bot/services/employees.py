@@ -59,7 +59,7 @@ async def register_by_contact(
     employee = await get_by_phone(session, phone)
 
     if employee is None and phone in owner_phones:
-        employee = Employee(phone=phone, full_name=telegram_name or "Владелец", role=Role.OWNER)
+        employee = Employee(phone=phone, full_name=(telegram_name or "Владелец")[:200], role=Role.OWNER)
         session.add(employee)
         employee.telegram_id = telegram_id
         await session.commit()
@@ -93,6 +93,7 @@ async def add_employee(
     /add_owner — владелец. Себя понизить нельзя, последнего владельца — тоже.
     """
     phone = normalize_phone(phone)
+    full_name = full_name.strip()[:200]
     employee = await get_by_phone(session, phone)
     created = employee is None
     if employee is None:
