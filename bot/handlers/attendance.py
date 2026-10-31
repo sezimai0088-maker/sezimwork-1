@@ -8,16 +8,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timedelta
+
 from bot import keyboards, texts
 from bot.config import Settings
 from bot.geo import twogis_link
+from bot.i18n import lang_of, use_lang
 from bot.handlers.menu import menu_for
 from bot.handlers.tasks import start_planning, start_report
 from bot.models import CheckoutMode, Employee
 from bot.services import attendance as att
 from bot.services import tasks as task_svc
 from bot.services import day_message
-from bot.states import Checkout
+from bot.states import Checkout, OutsideCheckin
 from bot.worktime import as_utc
 
 router = Router()
@@ -45,7 +48,7 @@ async def _reject_untrusted_location(message: Message) -> bool:
 # ---------- Уход ----------
 
 
-@router.message(F.text == texts.BTN_FINISH_DAY)
+@router.message(F.text.in_(texts.variants("BTN_FINISH_DAY")))
 async def finish_day(
     message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
 ) -> None:
@@ -69,7 +72,7 @@ async def finish_day(
     await message.answer(texts.ASK_CHECKOUT_LOCATION, reply_markup=keyboards.checkout_location())
 
 
-@router.message(StateFilter(Checkout.waiting_location), F.text == texts.BTN_CANCEL)
+@router.message(StateFilter(Checkout.waiting_location), F.text.in_(texts.variants("BTN_CANCEL")))
 async def cancel_checkout(
     message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
 ) -> None:
@@ -120,17 +123,17 @@ async def checkout_location(
     at_local = message.date.astimezone(settings.tz)
     is_field = result.mode == CheckoutMode.FIELD
     worked = result.attendance.worked_minutes or 0
-    if is_field:
-        group_text = texts.checked_out_group_field(
-            employee.full_name, at_local, worked, twogis_link(loc.latitude, loc.longitude, settings.twogis_base_url)
-        )
-    else:
-        group_text = texts.checked_out_group_office(
-            employee.full_name, at_local, worked, result.attendance.early_leave_minutes
-        )
-
     results = await task_svc.day_results(session, employee.id, today)
-    group_text += texts.tasks_block_for_group([(r.task.text, r.status, r.reason, r.comment) for r in results])
+    with use_lang(settings.group_lang):  # в общий чат — на языке группы
+        if is_field:
+            group_text = texts.checked_out_group_field(
+                employee.full_name, at_local, worked, twogis_link(loc.latitude, loc.longitude, settings.twogis_base_url)
+            )
+        else:
+            group_text = texts.checked_out_group_office(
+                employee.full_name, at_local, worked, result.attendance.early_leave_minutes
+            )
+        group_text += texts.tasks_block_for_group([(r.task.text, r.status, r.reason, r.comment) for r in results])
 
     # План так и не отправили — сначала публикуем приход и план, уход будет ответом на них
     if result.attendance.group_message_id is None:
@@ -158,6 +161,8 @@ async def checkin_location(
 ) -> None:
     if not await _require_employee(message, employee):
         return
+    if await state.get_state() == OutsideCheckin.comment.state:
+        await state.clear()  # сотрудник отправил место ещё раз — проверяем заново
     if await _reject_untrusted_location(message):
         return
 
@@ -185,7 +190,18 @@ async def checkin_location(
         await message.answer(texts.low_accuracy_text(message.location.horizontal_accuracy), reply_markup=menu)
         return
     if result.status == att.CheckInStatus.OUTSIDE:
-        await message.answer(texts.outside_zone(result.zone.distance_m), reply_markup=menu)
+        if not settings.allow_outside_checkin:
+            await message.answer(texts.outside_zone(result.zone.distance_m), reply_markup=menu)
+            return
+        # Не в офисе: просим написать, где он и почему — приход отметится вне офиса с комментарием
+        await state.set_state(OutsideCheckin.comment)
+        await state.update_data(
+            out_lat=loc.latitude,
+            out_lon=loc.longitude,
+            out_acc=loc.horizontal_accuracy,
+            out_at=message.date.isoformat(),
+        )
+        await message.answer(texts.outside_ask(result.zone.distance_m), reply_markup=keyboards.outside_checkin())
         return
 
     day = result.attendance
@@ -197,10 +213,93 @@ async def checkin_location(
     await start_planning(message, state, bot, session, settings, employee, day.work_date)
 
 
+# ---------- Приход вне офиса ----------
+
+OUTSIDE_TTL = timedelta(hours=2)
+
+
+@router.message(StateFilter(OutsideCheckin.comment), F.text.in_(texts.variants("BTN_CANCEL")))
+async def outside_cancel(
+    message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
+) -> None:
+    await state.clear()
+    if employee is None:
+        return
+    await message.answer(texts.OUTSIDE_CANCELLED, reply_markup=await menu_for(session, settings, employee))
+
+
+@router.message(StateFilter(OutsideCheckin.comment), F.text, ~F.text.in_(texts.MENU_BUTTONS), ~F.text.startswith("/"))
+async def outside_comment(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    session: AsyncSession,
+    settings: Settings,
+    employee: Employee | None,
+) -> None:
+    if not await _require_employee(message, employee):
+        await state.clear()
+        return
+    comment = message.text.strip()
+    if len(comment) < 3:
+        await message.answer(texts.OUTSIDE_COMMENT_SHORT)
+        return
+    data = await state.get_data()
+    sent_at = datetime.fromisoformat(data["out_at"])
+    # Время прихода — когда отправил местоположение. Если комментарий пришёл слишком поздно — заново.
+    if message.date - sent_at > OUTSIDE_TTL or (
+        message.date.astimezone(settings.tz).date() != sent_at.astimezone(settings.tz).date()
+    ):
+        await state.clear()
+        await message.answer(texts.OUTSIDE_EXPIRED, reply_markup=await menu_for(session, settings, employee))
+        return
+    result = await att.check_in_outside(
+        session,
+        settings,
+        employee,
+        lat=data["out_lat"],
+        lon=data["out_lon"],
+        accuracy_m=data.get("out_acc"),
+        now=sent_at,
+        comment=comment,
+    )
+    await state.clear()
+    menu = await menu_for(session, settings, employee)
+    day = result.attendance
+    if result.status == att.CheckInStatus.ALREADY:
+        await message.answer(texts.already_checked_in(as_utc(day.check_in_at).astimezone(settings.tz)), reply_markup=menu)
+        return
+
+    at_local = sent_at.astimezone(settings.tz)
+    await message.answer(texts.checked_in_private(at_local, day.late_minutes, outside=True), reply_markup=menu)
+    await _notify_outside(bot, session, settings, employee, day)
+    await start_planning(message, state, bot, session, settings, employee, day.work_date)
+
+
+async def _notify_outside(bot: Bot, session: AsyncSession, settings: Settings, employee: Employee, day) -> None:
+    """Руководителю сразу: кто, где (расстояние, 2ГИС) и почему не в офисе."""
+    from bot.services.reports import report_recipients
+
+    recipients = await task_svc.managers(session) or await report_recipients(session)
+    at_local = as_utc(day.check_in_at).astimezone(settings.tz)
+    distance, link, comment = day_message.outside_info(settings, day)
+    for person in recipients:
+        if person.id == employee.id or not person.telegram_id:
+            continue
+        with use_lang(lang_of(person)):
+            text = texts.outside_manager_note(
+                employee.full_name, at_local, day.late_minutes, day.is_workday, distance, link, comment
+            )
+        try:
+            await bot.send_message(person.telegram_id, text, disable_web_page_preview=True)
+        except Exception:  # noqa: BLE001 — недоступный руководитель не должен мешать отметке
+            pass
+
+
 # ---------- Помощь ----------
 
 
-@router.message(F.text == texts.BTN_HELP)
+@router.message(F.text.in_(texts.variants("BTN_HELP")))
 async def help_button(message: Message, session: AsyncSession, settings: Settings, employee: Employee | None) -> None:
     if not await _require_employee(message, employee):
         return

@@ -23,6 +23,11 @@ class Role(StrEnum):
     EMPLOYEE = "employee"
 
 
+class CheckInMode(StrEnum):
+    OFFICE = "office"
+    OUTSIDE = "outside"
+
+
 class CheckoutMode(StrEnum):
     OFFICE = "office"
     FIELD = "field"
@@ -43,6 +48,8 @@ class Employee(Base):
     work_start: Mapped[str | None] = mapped_column(String(5), nullable=True)   # "08:30"
     work_end: Mapped[str | None] = mapped_column(String(5), nullable=True)     # "17:30"
     work_days: Mapped[str | None] = mapped_column(String(20), nullable=True)   # "1,2,3,4,5,6"
+    # Язык бота: "ky" — кыргызский, "ru" — русский. Пусто — ещё не выбран (бот спросит).
+    lang: Mapped[str | None] = mapped_column(String(5), nullable=True)
 
     attendances: Mapped[list[Attendance]] = relationship(back_populates="employee")
 
@@ -72,6 +79,9 @@ class Attendance(Base):
     check_in_accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     check_in_distance_m: Mapped[float] = mapped_column(Float)
     late_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    # Где отметил приход: пусто или "office" — в офисе, "outside" — вне офиса (по работе), с комментарием
+    check_in_mode: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    check_in_comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     check_out_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     check_out_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -87,6 +97,10 @@ class Attendance(Base):
     group_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     employee: Mapped[Employee] = relationship(back_populates="attendances")
+
+    @property
+    def is_outside(self) -> bool:
+        return self.check_in_mode == CheckInMode.OUTSIDE
 
 
 class Task(Base):

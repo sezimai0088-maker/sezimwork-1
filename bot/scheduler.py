@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from bot import keyboards, texts
 from bot.config import Settings
+from bot.i18n import lang_of, use_lang
 from bot.models import Attendance, Employee, Role, Task, TaskAlert
 from bot.schedule import schedule_for
 from bot.services import delivery
@@ -100,13 +101,17 @@ async def job_reminders(bot: Bot, session: AsyncSession, settings: Settings, clo
             if moment <= clock.now < moment + CATCH_UP and await _once_per_day(
                 session, f"rem:in:{person.id}", clock.today
             ):
-                await _safe_dm(bot, person.telegram_id, texts.REMIND_CHECK_IN)
+                with use_lang(lang_of(person)):
+                    text = texts.REMIND_CHECK_IN
+                await _safe_dm(bot, person.telegram_id, text)
         elif att.check_out_at is None:
             moment = clock.at(sched.end) + timedelta(minutes=settings.checkout_reminder_min)
             if moment <= clock.now < moment + timedelta(hours=5) and await _once_per_day(
                 session, f"rem:out:{person.id}", clock.today
             ):
-                await _safe_dm(bot, person.telegram_id, texts.REMIND_CHECK_OUT)
+                with use_lang(lang_of(person)):
+                    text = texts.REMIND_CHECK_OUT
+                await _safe_dm(bot, person.telegram_id, text)
 
 
 async def job_morning_summary(bot: Bot, session: AsyncSession, settings: Settings, clock: Clock) -> None:
@@ -126,13 +131,15 @@ async def job_morning_summary(bot: Bot, session: AsyncSession, settings: Setting
             continue  # у этого сотрудника смена начинается позже
         missing.append(person.full_name)
     if missing:
-        await send_to_group(bot, session, settings, texts.not_checked_in_summary(missing))
+        with use_lang(settings.group_lang):
+            text = texts.not_checked_in_summary(missing)
+        await send_to_group(bot, session, settings, text)
 
 
 async def job_daily_report(bot: Bot, session: AsyncSession, settings: Settings, clock: Clock) -> None:
     if not clock.due(settings.daily_report_time) or not await _once_per_day(session, "job:daily", clock.today):
         return
-    recipients = [p.telegram_id for p in await report_recipients(session)]
+    recipients = [(p.telegram_id, lang_of(p)) for p in await report_recipients(session)]
     if recipients:
         await delivery.send_daily(bot, session, settings, clock.today, recipients)
 
@@ -140,15 +147,15 @@ async def job_daily_report(bot: Bot, session: AsyncSession, settings: Settings, 
 async def job_period_reports(bot: Bot, session: AsyncSession, settings: Settings, clock: Clock) -> None:
     if not clock.due(settings.weekly_report_time):
         return
-    recipients = [p.telegram_id for p in await report_recipients(session)]
+    recipients = [(p.telegram_id, lang_of(p)) for p in await report_recipients(session)]
     if clock.today.weekday() == 0 and await _once_per_day(session, "job:weekly", clock.today):
         start, end = previous_week(clock.today)
         if recipients:
-            await delivery.send_period(bot, session, settings, start, end, "Отчёт за неделю", recipients)
+            await delivery.send_period(bot, session, settings, start, end, "week", recipients)
     if clock.today.day == 1 and await _once_per_day(session, "job:monthly", clock.today):
         start, end = previous_month(clock.today)
         if recipients:
-            await delivery.send_period(bot, session, settings, start, end, "Отчёт за месяц", recipients)
+            await delivery.send_period(bot, session, settings, start, end, "month", recipients)
 
 
 async def job_repeat_alerts(bot: Bot, session: AsyncSession, settings: Settings, clock: Clock) -> None:
@@ -172,11 +179,13 @@ async def job_repeat_alerts(bot: Bot, session: AsyncSession, settings: Settings,
         if full.task.status in ("done", "cancelled"):
             continue
         history = await task_svc.task_history(session, full.task.id, limit=max(full.days, 2))
-        text = "🔁 <b>Напоминание</b>\n" + texts.alert_text(
-            full.kind, full.task.employee.full_name, full.task.text, full.days, history
-        )
         for manager in managers:
-            await _safe_dm(bot, manager.telegram_id, text, reply_markup=keyboards.alert_actions(full.id))
+            with use_lang(lang_of(manager)):
+                text = texts.ALERT_REMINDER + texts.alert_text(
+                    full.kind, full.task.employee.full_name, full.task.text, full.days, history
+                )
+                markup = keyboards.alert_actions(full.id)
+            await _safe_dm(bot, manager.telegram_id, text, reply_markup=markup)
 
 
 async def job_backup(bot: Bot, session: AsyncSession, settings: Settings, clock: Clock) -> None:
@@ -207,9 +216,9 @@ async def job_backup(bot: Bot, session: AsyncSession, settings: Settings, clock:
             make_backup(db_path, copy)
         for owner in owners:
             try:
-                await bot.send_document(
-                    owner.telegram_id, FSInputFile(copy), caption=texts.backup_caption(clock.today)
-                )
+                with use_lang(lang_of(owner)):
+                    caption = texts.backup_caption(clock.today)
+                await bot.send_document(owner.telegram_id, FSInputFile(copy), caption=caption)
             except Exception:  # noqa: BLE001
                 log.exception("Не удалось отправить бэкап")
 

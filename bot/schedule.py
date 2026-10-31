@@ -9,6 +9,15 @@ from datetime import date, time
 from bot.config import Settings
 
 WEEKDAY_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+WEEKDAY_SHORT_KY = ["Дш", "Шш", "Шр", "Бш", "Жм", "Иш", "Жк"]
+
+
+def weekday_short(isoweekday: int) -> str:
+    """1 → «Пн» (по-кыргызски «Дш»)."""
+    from bot.i18n import KY, get_lang
+
+    names = WEEKDAY_SHORT_KY if get_lang() == KY else WEEKDAY_SHORT
+    return names[isoweekday - 1]
 
 
 @dataclass(frozen=True)
@@ -35,8 +44,8 @@ def parse_days(value: str | None) -> frozenset[int] | None:
 def describe_days(days: frozenset[int]) -> str:
     ordered = sorted(days)
     if ordered == list(range(ordered[0], ordered[-1] + 1)) and len(ordered) > 2:
-        return f"{WEEKDAY_SHORT[ordered[0] - 1]}–{WEEKDAY_SHORT[ordered[-1] - 1]}"
-    return ", ".join(WEEKDAY_SHORT[d - 1] for d in ordered)
+        return f"{weekday_short(ordered[0])}–{weekday_short(ordered[-1])}"
+    return ", ".join(weekday_short(d) for d in ordered)
 
 
 def parse_hhmm(value: str | None) -> time | None:

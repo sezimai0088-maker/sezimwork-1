@@ -42,3 +42,8 @@ class TsCb(CallbackData, prefix="ts"):
     emp: int = 0         # 0 — все сотрудники (праздник)
     day: str = ""        # ГГГГММДД
     value: str = ""
+
+
+class LangCb(CallbackData, prefix="lg"):
+    code: str            # ky | ru
+    first: str = "0"     # "1" — выбор сразу после подключения

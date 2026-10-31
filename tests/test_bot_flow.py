@@ -117,13 +117,17 @@ class Harness:
             group_chat_id=GROUP_ID,
             database_url="sqlite+aiosqlite:///:memory:",
             work_days="1,2,3,4,5,6,7",
+            work_start="09:00",
+            work_end="18:00",
+            group_lang="ru",
         )
         self.engine = make_engine(self.settings.database_url)
         await init_db(self.engine)
         self.bot = Bot("42:TEST", session=self.tg, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         self.dp = Dispatcher(storage=MemoryStorage())
         self.dp["settings"] = self.settings
-        self.dp.update.outer_middleware(DbSessionMiddleware(make_sessionmaker(self.engine)))
+        self.sessionmaker = make_sessionmaker(self.engine)
+        self.dp.update.outer_middleware(DbSessionMiddleware(self.sessionmaker))
         # Роутеры модулей — общие объекты; в каждом тесте подключаем их заново
         from bot.handlers import admin, attendance, reports, start, tasks
 
@@ -194,14 +198,19 @@ def run(fn):
     asyncio.run(wrapper())
 
 
-async def onboard(h: Harness) -> None:
+async def onboard(h: Harness, lang: str = "ru", worker_lang: str | None = None) -> None:
+    """Подключение: номер → выбор языка (по умолчанию все выбирают русский)."""
+    flags = {"ru": "🇷🇺", "ky": "🇰🇬"}
     await h.text(OWNER, "/start")
     await h.contact(OWNER, "+996700000100")
+    await h.press(OWNER, h.find_button(OWNER, flags[lang]))
     await h.text(OWNER, "/add_manager +996700000200 Нурлан Касымов")
     await h.text(OWNER, "/add +996700000300 Айбек Асанов")
     for uid in (MANAGER, WORKER):
         await h.text(uid, "/start")
         await h.contact(uid, f"+996700000{uid}")
+        chosen = worker_lang if uid == WORKER and worker_lang else lang
+        await h.press(uid, h.find_button(uid, flags[chosen]))
 
 
 def test_full_day_with_tasks():
@@ -210,7 +219,7 @@ def test_full_day_with_tasks():
         assert any("владелец" in t for t in h.tg.texts(OWNER))
         assert any("Готово, Айбек Асанов" in t for t in h.tg.texts(WORKER))
 
-        # Вне офиса — не засчитывается
+        # Вне офиса — бот спрашивает, где он и почему; пока не ответил — приход не отмечен
         await h.location(WORKER, OFFICE[0] + 0.01, OFFICE[1])
         assert "от офиса" in h.tg.texts(WORKER)[-1]
         assert not h.tg.sent(GROUP_ID)
@@ -522,7 +531,6 @@ def test_manager_multiline_task_becomes_several_tasks():
     async def scenario(h: Harness):
         await onboard(h)
         await h.location(WORKER, *OFFICE)
-        await h.press(WORKER, h.find_button(WORKER, "📤 Отправить план")) if h.tg.last_inline(WORKER) else None
         await h.text(MANAGER, "📌 Поставить задачу")
         await h.press(MANAGER, h.find_button(MANAGER, "Айбек"))
         await h.text(MANAGER, "авпвап\nпапав")

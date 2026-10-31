@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
 from bot.geo import ZoneCheck, check_zone
-from bot.models import Attendance, CheckoutMode, Employee
+from bot.models import Attendance, CheckInMode, CheckoutMode, Employee
 from bot.schedule import schedule_for
 from bot.services.calendar import get_mark
 from bot.worktime import as_utc, early_leave_minutes, late_minutes, worked_minutes
@@ -56,6 +56,21 @@ async def get_day(session: AsyncSession, employee_id: int, day: date) -> Attenda
     )
 
 
+def is_clearly_outside(settings: Settings, zone: ZoneCheck, accuracy_m: float | None) -> bool:
+    """Точно не в офисе: даже с учётом погрешности GPS точка дальше круга офиса.
+
+    Погрешность в километры (выключена «Точная геопозиция») ничего не доказывает — такую точку не принимаем.
+    """
+    if accuracy_m is None or not zone.accuracy_too_low:
+        return not zone.inside
+    if accuracy_m >= APPROX_LOCATION_M:
+        return False
+    return zone.distance_m - accuracy_m > settings.office_radius_m
+
+
+APPROX_LOCATION_M = 1000
+
+
 async def check_in(
     session: AsyncSession,
     settings: Settings,
@@ -66,9 +81,8 @@ async def check_in(
     accuracy_m: float | None,
     now: datetime,
 ) -> CheckInResult:
-    """Отмечает приход. Принимается только внутри геозоны офиса."""
-    local_now = now.astimezone(settings.tz)
-    today = local_now.date()
+    """Отмечает приход в офисе. Если сотрудник не в офисе — возвращает OUTSIDE (без отметки)."""
+    today = now.astimezone(settings.tz).date()
 
     existing = await get_day(session, employee.id, today)
     if existing is not None:
@@ -76,10 +90,65 @@ async def check_in(
 
     zone = _zone(settings, lat, lon, accuracy_m)
     if zone.accuracy_too_low:
+        if is_clearly_outside(settings, zone, accuracy_m):
+            return CheckInResult(CheckInStatus.OUTSIDE, zone=zone)
         return CheckInResult(CheckInStatus.LOW_ACCURACY, zone=zone)
     if not zone.inside:
         return CheckInResult(CheckInStatus.OUTSIDE, zone=zone)
 
+    attendance = await _create_attendance(
+        session, settings, employee, lat=lat, lon=lon, accuracy_m=accuracy_m, now=now, distance_m=zone.distance_m
+    )
+    return CheckInResult(CheckInStatus.OK, zone=zone, attendance=attendance)
+
+
+async def check_in_outside(
+    session: AsyncSession,
+    settings: Settings,
+    employee: Employee,
+    *,
+    lat: float,
+    lon: float,
+    accuracy_m: float | None,
+    now: datetime,
+    comment: str,
+) -> CheckInResult:
+    """Приход вне офиса (по работе): время — когда сотрудник отправил местоположение, плюс его комментарий."""
+    today = now.astimezone(settings.tz).date()
+    existing = await get_day(session, employee.id, today)
+    if existing is not None:
+        return CheckInResult(CheckInStatus.ALREADY, attendance=existing)
+    zone = _zone(settings, lat, lon, accuracy_m)
+    attendance = await _create_attendance(
+        session,
+        settings,
+        employee,
+        lat=lat,
+        lon=lon,
+        accuracy_m=accuracy_m,
+        now=now,
+        distance_m=zone.distance_m,
+        mode=CheckInMode.OUTSIDE,
+        comment=comment.strip()[:500],
+    )
+    return CheckInResult(CheckInStatus.OK, zone=zone, attendance=attendance)
+
+
+async def _create_attendance(
+    session: AsyncSession,
+    settings: Settings,
+    employee: Employee,
+    *,
+    lat: float,
+    lon: float,
+    accuracy_m: float | None,
+    now: datetime,
+    distance_m: float,
+    mode: CheckInMode = CheckInMode.OFFICE,
+    comment: str | None = None,
+) -> Attendance:
+    local_now = now.astimezone(settings.tz)
+    today = local_now.date()
     sched = schedule_for(employee, settings)
     mark = await get_mark(session, employee.id, today)
     workday = sched.is_workday(today)
@@ -92,12 +161,14 @@ async def check_in(
         check_in_lat=lat,
         check_in_lon=lon,
         check_in_accuracy_m=accuracy_m,
-        check_in_distance_m=round(zone.distance_m, 1),
+        check_in_distance_m=round(distance_m, 1),
         late_minutes=late_minutes(local_now, sched.start, sched.grace_minutes) if counts else 0,
+        check_in_mode=mode,
+        check_in_comment=comment,
     )
     session.add(attendance)
     await session.commit()
-    return CheckInResult(CheckInStatus.OK, zone=zone, attendance=attendance)
+    return attendance
 
 
 async def check_out(

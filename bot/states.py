@@ -27,3 +27,7 @@ class Timesheet(StatesGroup):
     time = State()           # вводит время прихода/ухода
     reason = State()         # причина исправления
     schedule = State()       # время работы для графика
+
+
+class OutsideCheckin(StatesGroup):
+    comment = State()    # сотрудник не в офисе: пишет, где он и почему

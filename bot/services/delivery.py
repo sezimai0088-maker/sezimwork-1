@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot import report_texts
 from bot.config import Settings
 from bot.excel import build_timesheet
+from bot.i18n import normalize, use_lang
 from bot.services.reports import load_period
 
 log = logging.getLogger(__name__)
@@ -28,11 +29,25 @@ async def _send(bot: Bot, chat_id: int, text: str, document: tuple[bytes, str] |
         log.exception("Не удалось отправить отчёт в %s", chat_id)
 
 
-async def send_daily(bot: Bot, session: AsyncSession, settings: Settings, day: date, chat_ids: list[int]) -> str:
+Recipient = tuple[int, str]  # (chat_id, язык)
+
+
+def _by_lang(recipients: list[Recipient]) -> dict[str, list[int]]:
+    groups: dict[str, list[int]] = {}
+    for chat_id, lang in recipients:
+        groups.setdefault(normalize(lang), []).append(chat_id)
+    return groups
+
+
+async def send_daily(bot: Bot, session: AsyncSession, settings: Settings, day: date, recipients: list[Recipient]) -> str:
+    """Отчёт за день. Каждый получатель видит его на своём языке."""
     rows = await load_period(session, settings, day, day)
-    text = report_texts.daily_report(rows, day, settings.tz)
-    for chat_id in chat_ids:
-        await _send(bot, chat_id, text)
+    text = ""
+    for lang, chat_ids in _by_lang(recipients).items():
+        with use_lang(lang):
+            text = report_texts.daily_report(rows, day, settings.tz)
+        for chat_id in chat_ids:
+            await _send(bot, chat_id, text)
     return text
 
 
@@ -42,13 +57,18 @@ async def send_period(
     settings: Settings,
     start: date,
     end: date,
-    title: str,
-    chat_ids: list[int],
+    kind: str,
+    recipients: list[Recipient],
 ) -> str:
+    """Отчёт за неделю (kind="week") или месяц ("month") + Excel-табель, на языке каждого получателя."""
     rows = await load_period(session, settings, start, end)
-    text = report_texts.period_report(rows, start, end, title)
-    data = build_timesheet(rows, start, end, settings.tz, f"{title}: {report_texts.fmt_period(start, end)}")
-    filename = f"tabel_{start:%Y-%m-%d}_{end:%Y-%m-%d}.xlsx"
-    for chat_id in chat_ids:
-        await _send(bot, chat_id, text, (data, filename))
+    text = ""
+    for lang, chat_ids in _by_lang(recipients).items():
+        with use_lang(lang):
+            title = report_texts.period_title(kind)
+            text = report_texts.period_report(rows, start, end, title)
+            data = build_timesheet(rows, start, end, settings.tz, f"{title}: {report_texts.fmt_period(start, end)}")
+        filename = f"tabel_{start:%Y-%m-%d}_{end:%Y-%m-%d}.xlsx"
+        for chat_id in chat_ids:
+            await _send(bot, chat_id, text, (data, filename))
     return text

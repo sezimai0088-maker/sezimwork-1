@@ -61,6 +61,15 @@ class EmployeeRow:
         return sum(d.late for d in self.days.values())
 
     @property
+    def late_days(self) -> list[tuple[date, int]]:
+        """Дни с опозданием: (дата, минуты)."""
+        return [(d, info.late) for d, info in sorted(self.days.items()) if info.late]
+
+    @property
+    def outside_count(self) -> int:
+        return sum(1 for d in self.days.values() if d.attendance is not None and d.attendance.is_outside)
+
+    @property
     def worked_total(self) -> int:
         return sum((d.attendance.worked_minutes or 0) for d in self.days.values() if d.attendance)
 

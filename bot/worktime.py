@@ -32,12 +32,27 @@ def worked_minutes(check_in: datetime, check_out: datetime) -> int:
 
 
 def format_duration(minutes: int) -> str:
-    hours, mins = divmod(minutes, 60)
+    """844 → «14 ч 4 мин» (по-кыргызски «14 саат 4 мүн»)."""
+    from bot.i18n import tr
+
+    h_unit, m_unit = tr("ч", "саат"), tr("мин", "мүн")
+    hours, mins = divmod(int(minutes or 0), 60)
     if hours and mins:
-        return f"{hours} ч {mins} мин"
+        return f"{hours} {h_unit} {mins} {m_unit}"
     if hours:
-        return f"{hours} ч"
-    return f"{mins} мин"
+        return f"{hours} {h_unit}"
+    return f"{mins} {m_unit}"
+
+
+def format_distance(meters: float) -> str:
+    """3250 → «3 км 250 м», 850 → «850 м»."""
+    total = int(round(meters))
+    km, m = divmod(total, 1000)
+    if km and m:
+        return f"{km} км {m} м"
+    if km:
+        return f"{km} км"
+    return f"{m} м"
 
 
 def as_utc(value: datetime) -> datetime:

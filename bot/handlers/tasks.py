@@ -15,6 +15,7 @@ from bot import keyboards, texts
 from bot.callbacks import AcceptCb, AlertCb, AssignCb, PlanCb, ReportCb, TaskCb
 from bot.config import Settings
 from bot.handlers.menu import menu_for
+from bot.i18n import lang_of, tr, use_lang
 from bot.models import Employee
 from bot.services import attendance as att
 from bot.services import day_message
@@ -130,7 +131,7 @@ async def _save_tasks(
     await _show_plan(message, session, employee, today, edit=False)
 
 
-@router.message(StateFilter(Plan.writing), F.text == texts.BTN_TASKS_DONE)
+@router.message(StateFilter(Plan.writing), F.text.in_(texts.variants("BTN_TASKS_DONE")))
 async def old_done_button(
     message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
 ) -> None:
@@ -168,7 +169,7 @@ async def plan_send(
     sent = await day_message.refresh(bot, session, settings, employee, today)
     tasks = await _open_plan(session, employee, today)
     await _safe_edit(callback.message, texts.plan_sent(tasks, today), keyboards.plan_buttons(tasks))
-    await callback.answer("Отправлено" if sent else "")
+    await callback.answer(tr("Отправлено", "Жөнөтүлдү") if sent else "")
     await callback.message.answer(texts.PLAN_SENT_OK, reply_markup=await menu_for(session, settings, employee))
     if not sent and employee.is_owner:
         await callback.message.answer(texts.GROUP_NOT_SET)
@@ -191,17 +192,17 @@ async def plan_delete(
         return await callback.answer(texts.DAY_CLOSED_FOR_TASKS, show_alert=True)
     task = await svc.get_task(session, callback_data.task_id)
     if task is None or task.employee_id != employee.id or not await svc.remove_from_today(session, task):
-        return await callback.answer("Эту задачу убрать нельзя")
+        return await callback.answer(tr("Эту задачу убрать нельзя", "Бул тапшырманы алып салууга болбойт"))
     if _sent(day):
         await day_message.refresh(bot, session, settings, employee, today)
     await _show_plan(callback.message, session, employee, today, edit=True)
-    await callback.answer("Убрано")
+    await callback.answer(tr("Убрано", "Алынды"))
 
 
 # ======================= Мои задачи / добавить =======================
 
 
-@router.message(F.text == texts.BTN_ADD_TASK)
+@router.message(F.text.in_(texts.variants("BTN_ADD_TASK")))
 async def add_task_button(
     message: Message, state: FSMContext, session: AsyncSession, settings: Settings, employee: Employee | None
 ) -> None:
@@ -229,7 +230,7 @@ async def _show_my_tasks(target: Message, session: AsyncSession, employee: Emplo
         await target.answer(text, reply_markup=markup)
 
 
-@router.message(F.text == texts.BTN_MY_TASKS)
+@router.message(F.text.in_(texts.variants("BTN_MY_TASKS")))
 async def my_tasks_button(message: Message, session: AsyncSession, settings: Settings, employee: Employee | None) -> None:
     if employee is None:
         return
@@ -244,17 +245,21 @@ async def task_action(
         return await callback.answer()
     task = await svc.get_task(session, callback_data.task_id)
     if task is None or task.employee_id != employee.id:
-        return await callback.answer("Задача не найдена")
+        return await callback.answer(tr("Задача не найдена", "Тапшырма табылган жок"))
     today = today_for(settings)
+    if task.from_manager:
+        # Срок задачи от руководителя меняет только руководитель
+        await callback.answer(texts.DUE_LOCKED, show_alert=True)
+        return await _show_my_tasks(callback.message, session, employee, today, edit=True)
 
     if callback_data.action == "due":
         await callback.message.edit_reply_markup(reply_markup=keyboards.due_choice(task.id, today))
-        return await callback.answer("Выберите срок")
+        return await callback.answer(tr("Выберите срок", "Мөөнөттү тандаңыз"))
     elif callback_data.action == "setdue":
         due = due_options(today).get(callback_data.value)
         if due is not None:
             await svc.set_due(session, task, due)
-        await callback.answer("Срок изменён")
+        await callback.answer(tr("Срок изменён", "Мөөнөт өзгөртүлдү"))
     await _show_my_tasks(callback.message, session, employee, today, edit=True)
 
 
@@ -352,8 +357,8 @@ async def report_reason(
 async def report_skip(callback: CallbackQuery, state: FSMContext, session: AsyncSession, settings: Settings) -> None:
     data = await state.get_data()
     if data.get("comment_required"):
-        return await callback.answer("Здесь нужен комментарий", show_alert=True)
-    await _safe_edit(callback.message, "💬 Без комментария")
+        return await callback.answer(tr("Здесь нужен комментарий", "Бул жерде түшүндүрмө керек"), show_alert=True)
+    await _safe_edit(callback.message, tr("💬 Без комментария", "💬 Түшүндүрмөсүз"))
     await callback.answer()
     await _advance(callback.message, state, session, today_for(settings), None)
 
@@ -365,7 +370,7 @@ async def report_comment(message: Message, state: FSMContext, session: AsyncSess
 
 @router.callback_query(StateFilter(Report.confirm), ReportCb.filter(F.action == "redo"))
 async def report_redo(callback: CallbackQuery, state: FSMContext, session: AsyncSession, settings: Settings) -> None:
-    await _safe_edit(callback.message, "✏️ Заполняем заново")
+    await _safe_edit(callback.message, tr("✏️ Заполняем заново", "✏️ Кайра толтурабыз"))
     await callback.answer()
     await state.update_data(idx=0, answers=[], current={})
     await _ask_current(callback.message, state, session, today_for(settings))
@@ -394,8 +399,11 @@ async def report_send(
         for a in data["answers"]
     ]
     raised = await svc.save_day_report(session, employee, answers, today, settings.alert_days)
-    await _safe_edit(callback.message, callback.message.html_text.replace("\nВсё верно?", "\n✅ Отправлено"))
-    await callback.answer("Сохранено")
+    await _safe_edit(
+        callback.message,
+        callback.message.html_text.replace("\n" + texts.REPORT_CONFIRM_Q, "\n" + tr("✅ Отправлено", "✅ Жөнөтүлдү")),
+    )
+    await callback.answer(tr("Сохранено", "Сакталды"))
 
     await _send_alerts(bot, session, employee, raised)
 
@@ -410,10 +418,12 @@ async def _send_alerts(bot: Bot, session: AsyncSession, employee: Employee, rais
     recipients = await svc.managers(session)
     for item in raised:
         history = await svc.task_history(session, item.task.id, limit=item.alert.days)
-        text = texts.alert_text(item.kind, employee.full_name, item.task.text, item.alert.days, history)
         for manager in recipients:
+            with use_lang(lang_of(manager)):  # каждому руководителю — на его языке
+                text = texts.alert_text(item.kind, employee.full_name, item.task.text, item.alert.days, history)
+                markup = keyboards.alert_actions(item.alert.id)
             try:
-                await bot.send_message(manager.telegram_id, text, reply_markup=keyboards.alert_actions(item.alert.id))
+                await bot.send_message(manager.telegram_id, text, reply_markup=markup)
             except Exception:  # noqa: BLE001 — недоступный руководитель не должен ломать итог дня
                 pass
 
@@ -423,10 +433,10 @@ async def alert_action(
     callback: CallbackQuery, callback_data: AlertCb, session: AsyncSession, employee: Employee | None
 ) -> None:
     if employee is None or not employee.is_manager:
-        return await callback.answer("Только для руководителя")
+        return await callback.answer(tr("Только для руководителя", "Жетекчи үчүн гана"))
     alert = await svc.get_alert(session, callback_data.alert_id)
     if alert is None:
-        return await callback.answer("Алерт не найден")
+        return await callback.answer(tr("Алерт не найден", "Эскертүү табылган жок"))
     await svc.ack_alert(session, alert, employee)
     note = texts.ALERT_ACKED
     if callback_data.action == "cancel":
@@ -439,7 +449,7 @@ async def alert_action(
 # ======================= Задачи от руководителя =======================
 
 
-@router.message(F.text == texts.BTN_ASSIGN)
+@router.message(F.text.in_(texts.variants("BTN_ASSIGN")))
 async def assign_start(message: Message, state: FSMContext, session: AsyncSession, employee: Employee | None) -> None:
     if employee is None or not employee.is_manager:
         return
@@ -459,10 +469,10 @@ async def assign_employee(
         return await callback.answer()
     target = await session.get(Employee, int(callback_data.value))
     if target is None or not target.is_active:
-        return await callback.answer("Сотрудник не найден")
+        return await callback.answer(tr("Сотрудник не найден", "Кызматкер табылган жок"))
     await state.set_state(Assign.text)
     await state.update_data(assign_to=target.id)
-    await _safe_edit(callback.message, f"Сотрудник: <b>{target.full_name}</b>")
+    await _safe_edit(callback.message, f"{tr('Сотрудник', 'Кызматкер')}: <b>{target.full_name}</b>")
     await callback.answer()
     await callback.message.answer(texts.assign_ask_text(target.full_name))
 
@@ -487,7 +497,7 @@ async def assign_due(
         return await callback.answer()
     data = await state.get_data()
     if not data.get("assign_text"):
-        return await callback.answer("Сначала напишите текст задачи")
+        return await callback.answer(tr("Сначала напишите текст задачи", "Адегенде тапшырманын текстин жазыңыз"))
     target = await session.get(Employee, data["assign_to"])
     today = today_for(settings)
     due = due_options(today).get(callback_data.value, today)
@@ -496,18 +506,17 @@ async def assign_due(
     await state.clear()
     if _sent(await _day_open(session, target, today)):
         await day_message.refresh(bot, session, settings, target, today)
-    await _safe_edit(callback.message, f"{texts.ASSIGN_DUE} {keyboards.DUE_LABELS.get(callback_data.value, '')}")
+    await _safe_edit(callback.message, f"{texts.ASSIGN_DUE} {texts.DUE_LABELS.get(callback_data.value, '')}")
     await callback.answer()
 
     if target.telegram_id:
         # Каждая строка — отдельная задача со своей кнопкой «Принял»
         for item in added:
+            with use_lang(lang_of(target)):  # сотруднику — на его языке
+                note = texts.new_task_from_manager(employee.full_name, item.task.text, item.task.due_date, today)
+                markup = keyboards.accept_task(item.task.id)
             try:
-                await bot.send_message(
-                    target.telegram_id,
-                    texts.new_task_from_manager(employee.full_name, item.task.text, item.task.due_date, today),
-                    reply_markup=keyboards.accept_task(item.task.id),
-                )
+                await bot.send_message(target.telegram_id, note, reply_markup=markup)
             except Exception:  # noqa: BLE001
                 pass
     await callback.message.answer(texts.ASSIGN_DONE, reply_markup=await menu_for(session, settings, employee))
@@ -521,14 +530,17 @@ async def accept(
         return await callback.answer()
     task = await svc.get_task(session, callback_data.task_id)
     if task is None or task.employee_id != employee.id:
-        return await callback.answer("Задача не найдена")
+        return await callback.answer(tr("Задача не найдена", "Тапшырма табылган жок"))
     await svc.accept_task(session, task)
-    await _safe_edit(callback.message, f"{callback.message.html_text}\n\n✅ Принято")
-    await callback.answer("Принято")
+    accepted = tr("✅ Принято", "✅ Кабыл алынды")
+    await _safe_edit(callback.message, f"{callback.message.html_text}\n\n{accepted}")
+    await callback.answer(accepted)
     author = task.author
     if author is not None and author.telegram_id:
+        with use_lang(lang_of(author)):
+            note = texts.task_accepted_note(employee.full_name, task.text)
         try:
-            await bot.send_message(author.telegram_id, texts.task_accepted_note(employee.full_name, task.text))
+            await bot.send_message(author.telegram_id, note)
         except Exception:  # noqa: BLE001
             pass
 
@@ -555,4 +567,4 @@ async def free_text_as_tasks(
 # Нажатие на старую кнопку, когда шаг уже пройден
 @router.callback_query()
 async def stale_button(callback: CallbackQuery) -> None:
-    await callback.answer("Эта кнопка уже неактуальна")
+    await callback.answer(tr("Эта кнопка уже неактуальна", "Бул баскыч эми иштебейт"))

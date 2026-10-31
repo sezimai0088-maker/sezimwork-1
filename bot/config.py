@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     max_accuracy_m: float = 100
 
     timezone: str = "Asia/Bishkek"
-    work_start: time = time(9, 0)
-    work_end: time = time(18, 0)
+    work_start: time = time(8, 30)
+    work_end: time = time(17, 30)
     grace_minutes: int = 5
     work_days: str = "1,2,3,4,5"
     # Через сколько дней подряд «Не успел» руководитель получает алерт
@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     checkout_reminder_min: int = 30             # через сколько минут после конца напомнить завершить день
     backup_time: time = time(3, 0)              # ночной бэкап базы владельцу
     plan_autosend_min: int = 15                 # если план не отправили — бот отправит приход сам через N минут
+
+    # Язык сообщений в общем чате: "ky" — кыргызский, "ru" — русский
+    group_lang: str = "ky"
+    # Отметка прихода вне офиса (по работе) с комментарием
+    allow_outside_checkin: bool = True
 
     twogis_base_url: str = "https://2gis.kg"
     database_url: str = "sqlite+aiosqlite:///data/bot.db"

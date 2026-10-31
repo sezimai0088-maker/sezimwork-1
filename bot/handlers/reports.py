@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot import keyboards, report_texts, texts
 from bot.callbacks import ReportsCb, TsCb
 from bot.config import Settings
+from bot.i18n import get_lang, lang_of, tr, use_lang
 from bot.models import Attendance, DayKind, Employee, Role
 from bot.schedule import parse_days, parse_hhmm, parse_range, schedule_for
 from bot.services import calendar as cal
@@ -45,7 +46,7 @@ async def _edit(message: Message, text: str, markup=None) -> None:
 # ======================= Отчёты =======================
 
 
-@router.message(F.text == texts.BTN_REPORTS)
+@router.message(F.text.in_(texts.variants("BTN_REPORTS")))
 async def reports_menu(message: Message, employee: Employee | None) -> None:
     if not _manager(employee):
         await message.answer(texts.REPORTS_ONLY_MANAGERS)
@@ -64,23 +65,23 @@ async def reports_show(
 ) -> None:
     if not _manager(employee):
         return await callback.answer(texts.REPORTS_ONLY_MANAGERS, show_alert=True)
-    await callback.answer("Готовлю отчёт…")
+    await callback.answer(tr("Готовлю отчёт…", "Отчет даярдалып жатат…"))
     today = today_for(settings)
-    chat = [callback.from_user.id]
+    chat = [(callback.from_user.id, get_lang())]
     period = callback_data.period
     if period in ("today", "yesterday"):
         day = today if period == "today" else today - timedelta(days=1)
         await delivery.send_daily(bot, session, settings, day, chat)
         return
     if period == "week":
-        start, end, title = *week_bounds(today), "Отчёт за неделю"
+        start, end, kind = *week_bounds(today), "week"
     elif period == "prev_week":
-        start, end, title = *previous_week(today), "Отчёт за неделю"
+        start, end, kind = *previous_week(today), "week"
     elif period == "month":
-        start, end, title = *month_bounds(today), "Отчёт за месяц"
+        start, end, kind = *month_bounds(today), "month"
     else:
-        start, end, title = *previous_month(today), "Отчёт за месяц"
-    await delivery.send_period(bot, session, settings, start, min(end, today) if end > today else end, title, chat)
+        start, end, kind = *previous_month(today), "month"
+    await delivery.send_period(bot, session, settings, start, min(end, today) if end > today else end, kind, chat)
 
 
 # ======================= Табель =======================
@@ -120,8 +121,11 @@ async def _show_card(
 ) -> None:
     if emp_id == 0:
         mark = await cal.get_mark(session, -1, day)  # -1: только общие отметки
-        text = f"🎉 <b>Праздник для всех</b> · {report_texts.fmt_day(day)}\n"
-        text += "Сейчас: праздник" if mark is not None else "Сейчас: обычный день"
+        text = f"🎉 <b>{tr('Праздник для всех', 'Баары үчүн майрам')}</b> · {report_texts.fmt_day(day)}\n"
+        if mark is not None:
+            text += tr("Сейчас: праздник", "Азыр: майрам")
+        else:
+            text += tr("Сейчас: обычный день", "Азыр: кадимки күн")
     else:
         person = await session.get(Employee, emp_id)
         att = await session.scalar(
@@ -145,7 +149,7 @@ async def _show_card(
         await target.answer(text, reply_markup=markup)
 
 
-@router.message(F.text == texts.BTN_TIMESHEET)
+@router.message(F.text.in_(texts.variants("BTN_TIMESHEET")))
 async def timesheet_start(message: Message, state: FSMContext, session: AsyncSession, employee: Employee | None) -> None:
     if not _manager(employee):
         await message.answer(texts.REPORTS_ONLY_MANAGERS)
@@ -163,7 +167,7 @@ async def ts_employee(
         return await callback.answer()
     await state.clear()
     if callback_data.emp == 0:
-        title = "🎉 Праздник для всех."
+        title = tr("🎉 Праздник для всех.", "🎉 Баары үчүн майрам.")
     else:
         person = await session.get(Employee, callback_data.emp)
         title = f"🗓 <b>{person.full_name}</b>"
@@ -206,11 +210,11 @@ async def ts_date_text(message: Message, state: FSMContext, session: AsyncSessio
 async def ts_kind(callback: CallbackQuery, callback_data: TsCb, employee: Employee | None) -> None:
     if not _manager(employee):
         return await callback.answer()
-    label = report_texts.DAY_KIND_LABEL.get(callback_data.value, "")
+    label = report_texts.day_kind_label(callback_data.value)
+    since = tr(f"с {_parse_day(callback_data.day):%d.%m}", f"{_parse_day(callback_data.day):%d.%m} баштап")
     await _edit(
         callback.message,
-        f"{report_texts.DAY_KIND_ICON.get(callback_data.value, '')} {label.capitalize()} с "
-        f"{_parse_day(callback_data.day):%d.%m}. {texts.TS_ASK_DAYS}",
+        f"{report_texts.DAY_KIND_ICON.get(callback_data.value, '')} {label.capitalize()} {since}. {texts.TS_ASK_DAYS}",
         keyboards.ts_days_count(callback_data.emp, _parse_day(callback_data.day), callback_data.value),
     )
     await callback.answer()
@@ -230,15 +234,17 @@ async def ts_days(
         session, employee_id=emp_id, start=start, days=int(count), kind=DayKind(kind), comment=None, actor=employee
     )
     await callback.answer(texts.TS_SAVED)
-    notice = report_texts.mark_notice(kind, marked[0], marked[-1])
     if emp_id is not None:
         person = await session.get(Employee, emp_id)
         if person.telegram_id:
+            with use_lang(lang_of(person)):
+                notice = report_texts.mark_notice(kind, marked[0], marked[-1])
             try:
                 await bot.send_message(person.telegram_id, notice)
             except Exception:  # noqa: BLE001
                 pass
-    await callback.message.answer(f"{texts.TS_SAVED} {notice.replace('Руководитель отметил: ', '')}")
+    period = f"{marked[0]:%d.%m}" if marked[0] == marked[-1] else f"{marked[0]:%d.%m}–{marked[-1]:%d.%m}"
+    await callback.message.answer(f"{texts.TS_SAVED} {report_texts.day_kind_label(kind)}, {period}.")
     await _show_card(callback.message, session, settings, callback_data.emp, start, edit=True)
 
 
@@ -307,9 +313,9 @@ async def ts_reason_text(
     await state.clear()
     if person.telegram_id and person.id != employee.id:
         try:
-            await bot.send_message(
-                person.telegram_id, report_texts.correction_notice(data["ts_kind"], day, data["ts_time"], reason)
-            )
+            with use_lang(lang_of(person)):
+                notice = report_texts.correction_notice(data["ts_kind"], day, data["ts_time"], reason)
+            await bot.send_message(person.telegram_id, notice)
         except Exception:  # noqa: BLE001
             pass
     await message.answer(texts.TS_SAVED)
@@ -327,7 +333,8 @@ async def ts_schedule_start(
     await state.set_state(Timesheet.schedule)
     await state.update_data(ts_emp=person.id, ts_day=callback_data.day)
     await callback.message.answer(
-        f"Сейчас у {person.full_name}: {schedule_for(person, settings).describe()}.\n{texts.TS_ASK_SCHEDULE}"
+        tr(f"Сейчас у {person.full_name}: ", f"{person.full_name} азыр: ")
+        + f"{schedule_for(person, settings).describe()}.\n{texts.TS_ASK_SCHEDULE}"
     )
     await callback.answer()
 
@@ -365,6 +372,6 @@ async def ts_schedule_days(
         settings=settings,
     )
     await state.clear()
-    await _edit(callback.message, f"{texts.TS_SAVED} График {person.full_name}: {schedule_for(person, settings).describe()}")
+    await _edit(callback.message, f"{texts.TS_SAVED} {tr('График', 'График')} {person.full_name}: {schedule_for(person, settings).describe()}")
     await callback.answer(texts.TS_SAVED)
     await _show_card(callback.message, session, settings, person.id, _parse_day(data["ts_day"]), edit=False)

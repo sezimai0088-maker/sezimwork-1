@@ -48,6 +48,9 @@ def settings(**kw) -> Settings:
         office_lat=OFFICE[0],
         office_lon=OFFICE[1],
         database_url="sqlite+aiosqlite:///:memory:",
+        work_start="09:00",
+        work_end="18:00",
+        group_lang="ru",
     )
     base.update(kw)
     return Settings(**base)

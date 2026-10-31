@@ -26,6 +26,9 @@ def make_settings() -> Settings:
         office_lat=OFFICE_LAT,
         office_lon=OFFICE_LON,
         database_url="sqlite+aiosqlite:///:memory:",
+        work_start="09:00",
+        work_end="18:00",
+        group_lang="ru",
     )
 
 
